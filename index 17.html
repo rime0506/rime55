@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <!-- 关键配置：移动端视口、禁止缩放、适配刘海屏 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    
+    <!-- PWA / 沉浸式全屏 App 配置 -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default"> <!-- 白底黑字顶部状态栏 -->
+    <meta name="apple-mobile-web-app-title" content="InsChat">
+    <meta name="theme-color" content="#ffffff">
+
+    <!-- 内联 Manifest 让浏览器识别为可安装的 PWA -->
+    <link rel="manifest" href="data:application/manifest+json;charset=utf-8,%7B%22name%22%3A%22InsChat%22%2C%22short_name%22%3A%22InsChat%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23ffffff%22%2C%22theme_color%22%3A%22%23ffffff%22%2C%22icons%22%3A%5B%5D%7D">
+
+    <title>Ins Style App</title>
+
+    <style>
+        /* ================= 基础重置 ================= */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent; /* 去除手机端点击高亮 */
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+            color: #262626; /* Ins风格的深灰色文字 */
+            /* 使用 dvh 完美适配移动端浏览器的动态底部地址栏问题 */
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* 公共图标按钮样式 */
+        .icon-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px;
+            color: #262626;
+            transition: opacity 0.2s;
+        }
+        .icon-btn:active {
+            opacity: 0.5;
+        }
+        .icon-btn svg {
+            width: 24px;
+            height: 24px;
+            stroke-width: 1.5;
+        }
+
+        /* ================= 顶栏 ================= */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 44px;
+            padding: 0 8px;
+            /* 适配刘海屏顶部安全区 */
+            padding-top: env(safe-area-inset-top);
+            border-bottom: 1px solid #dbdbdb; /* 极细浅灰边框 */
+            background-color: #ffffff;
+            flex-shrink: 0;
+            margin-top: 10px;
+        }
+
+        .header-title {
+            font-size: 16px;
+            font-weight: 600;
+            flex: 1;
+            text-align: center;
+        }
+
+        .header-left, .header-right {
+            display: flex;
+            align-items: center;
+            min-width: 70px;
+        }
+        .header-right {
+            justify-content: flex-end;
+            gap: 4px;
+        }
+
+        /* ================= 主内容区 ================= */
+        main {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            background-color: #ffffff;
+        }
+
+        /* 聊天气泡（示例） */
+        .msg {
+            max-width: 75%;
+            padding: 10px 15px;
+            border-radius: 20px;
+            font-size: 15px;
+            line-height: 1.4;
+        }
+        .msg.received {
+            align-self: flex-start;
+            background-color: #efefef;
+            color: #000;
+        }
+        .msg.sent {
+            align-self: flex-end;
+            background-color: #efefef;
+            /* background-color: #3797f0; 蓝色气泡备选 */
+            /* color: white; */
+            border: 1px solid #dbdbdb;
+        }
+
+        /* ================= 底栏 ================= */
+        footer {
+            display: flex;
+            align-items: center;
+            padding: 10px 12px;
+            /* 适配底部小黑条安全区 */
+            padding-bottom: calc(10px + env(safe-area-inset-bottom));
+            background-color: #ffffff;
+            border-top: 1px solid #dbdbdb;
+            flex-shrink: 0;
+            gap: 8px;
+        }
+
+        /* 圆条形输入框 */
+        .input-wrapper {
+            flex: 1;
+            display: flex;
+            background-color: #fafafa;
+            border: 1px solid #dbdbdb;
+            border-radius: 20px;
+            padding: 2px 15px;
+            align-items: center;
+            min-height: 40px;
+        }
+
+        .input-wrapper input {
+            flex: 1;
+            border: none;
+            background: transparent;
+            font-size: 15px;
+            color: #262626;
+            outline: none;
+            width: 100%;
+        }
+
+        .input-wrapper input::placeholder {
+            color: #8e8e8e;
+        }
+
+        /* 底部左右操作区 */
+        .footer-left {
+            display: flex;
+            align-items: center;
+        }
+        .footer-right {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 顶栏 -->
+    <header>
+        <div class="header-left">
+            <!-- 返回按钮 -->
+            <button class="icon-btn" id="backBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+        </div>
+        
+        <div class="header-title">jennie_rubyjane</div>
+        
+        <div class="header-right">
+            <!-- 右侧按钮1：电话 -->
+            <button class="icon-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            </button>
+            <!-- 右侧按钮2：视频 -->
+            <button class="icon-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- 中间聊天记录区 -->
+    <main id="chatBox">
+        <div class="msg received">Hi! 这是一款 Ins 极简风的 Web App 💫</div>
+        <div class="msg received">你可以用手机浏览器打开，点击「添加到主屏幕」。</div>
+        <div class="msg sent">太棒了，没有任何多余的边框和颜色！</div>
+    </main>
+
+    <!-- 底栏 -->
+    <footer>
+        <div class="footer-left">
+            <!-- 左侧按钮1：相机/加号 -->
+            <button class="icon-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" class="feather feather-camera"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </button>
+        </div>
+
+        <div class="input-wrapper">
+            <input type="text" id="msgInput" placeholder="发消息...">
+        </div>
+
+        <div class="footer-right">
+            <!-- 右侧按钮1：麦克风 -->
+            <button class="icon-btn" id="micBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+            </button>
+            <!-- 右侧按钮2：照片/发送图标 -->
+            <button class="icon-btn" id="sendBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            </button>
+        </div>
+    </footer>
+
+    <!-- JS 简单的发送交互 -->
+    <script>
+        const input = document.getElementById('msgInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const chatBox = document.getElementById('chatBox');
+        
+        // 发送消息逻辑
+        function sendMessage() {
+            const text = input.value.trim();
+            if (text) {
+                // 创建气泡元素
+                const msgDiv = document.createElement('div');
+                msgDiv.className = 'msg sent';
+                msgDiv.innerText = text;
+                
+                // 添加到主内容去并滚动到底部
+                chatBox.appendChild(msgDiv);
+                chatBox.scrollTop = chatBox.scrollHeight;
+                
+                // 清空输入框
+                input.value = '';
+                
+                // 模拟回复
+                setTimeout(() => {
+                    const replyDiv = document.createElement('div');
+                    replyDiv.className = 'msg received';
+                    replyDiv.innerText = '发送成功！PWA 全屏体验很顺滑对吧？';
+                    chatBox.appendChild(replyDiv);
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }, 1000);
+            }
+        }
+
+        // 监听按钮点击或键盘回车
+        sendBtn.addEventListener('click', sendMessage);
+        input.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // 监听输入框变化实时改变最右侧图标（模仿真实App，有字时变为发送图标，没字变为图片图标）
+        input.addEventListener('input', function() {
+            if (this.value.trim().length > 0) {
+                // 替换为"发送"纸飞机图标
+                sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#262626" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+            } else {
+                // 替换回"照片"图标
+                sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
+            }
+        });
+    </script>
+</body>
+</html>

@@ -2,51 +2,60 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <!-- PWA 和 全面屏/刘海屏适配 -->
+    <!-- 关键修复 1：视口设置，强制铺满，适配刘海屏 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    
+    <!-- 关键修复 2：PWA 核心配置，确保添加到桌面后作为独立App运行 -->
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"> 
     <meta name="apple-mobile-web-app-title" content="MyPhone">
-    
-    <title>iOS 桌面与 Ins 聊天</title>
+    <meta name="theme-color" content="#ffffff">
+
+    <!-- 关键修复 3：内联 Manifest (这是安卓和新版iOS全屏的关键) -->
+    <link rel="manifest" href="data:application/manifest+json;charset=utf-8,%7B%22name%22%3A%22MyPhone%22%2C%22short_name%22%3A%22MyPhone%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23ffffff%22%2C%22theme_color%22%3A%22%23ffffff%22%2C%22icons%22%3A%5B%5D%7D">
+
+    <title>iOS Desktop</title>
 
     <style>
         /* ================= 基础重置 ================= */
-        * {
+        html, body {
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* 禁止整体页面滚动，防止回弹 */
             -webkit-tap-highlight-color: transparent;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #000; /* 防止旋转时漏出白边 */
         }
 
-        body {
-            background-color: #000; /* 底部防白光 */
-            overflow: hidden;
-        }
-
-        /* 统一的页面容器控制 */
+        /* 统一的页面容器：使用 dvh 确保填满可视区域 */
         .page-view {
             position: absolute;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100dvh;
+            width: 100vw;
+            height: 100dvh; /* 动态视口高度，解决移动端地址栏问题 */
             display: flex;
             flex-direction: column;
+            overflow: hidden;
+            background-color: #fff;
         }
 
-        /* ================= 页面1：iOS 风格桌面 ================= */
+        /* ================= 视图1：iOS 风格桌面 ================= */
         #desktop-view {
+            /* 渐变壁纸 */
             background: linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 100%);
             z-index: 10;
-            transition: opacity 0.3s ease, transform 0.3s ease;
+            transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
         }
 
+        /* 顶部刘海/状态栏占位 */
         .status-bar-safe-area {
             height: env(safe-area-inset-top);
             width: 100%;
+            flex-shrink: 0;
         }
 
         .desktop-main {
@@ -57,6 +66,7 @@
             grid-auto-rows: min-content;
             gap: 25px 15px;
             justify-items: center;
+            align-content: start; /* 图标靠上排列 */
         }
 
         .app-item {
@@ -65,288 +75,313 @@
             align-items: center;
             gap: 6px;
             cursor: pointer;
-            transition: transform 0.2s ease;
+            transition: transform 0.1s;
         }
 
-        .app-item:active {
-            transform: scale(0.9);
-        }
+        .app-item:active { transform: scale(0.9); }
 
         .app-icon {
             width: 60px;
             height: 60px;
-            border-radius: 22.5%; /* 苹果松鼠圆角 */
+            border-radius: 14px; /* 修正更接近iOS的圆角 */
             display: flex;
             align-items: center;
             justify-content: center;
             box-shadow: 0 4px 10px rgba(0,0,0,0.1);
             color: white;
+            font-size: 0; /* 消除潜在间隙 */
         }
 
         .app-icon svg { width: 32px; height: 32px; stroke-width: 1.5; }
 
         .app-name {
-            font-size: 12px;
+            font-size: 11px;
             color: white;
-            text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.4);
             font-weight: 500;
+            letter-spacing: 0.3px;
         }
 
-        /* 背景颜色分配 */
-        .bg-photos { background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%); }
-        .bg-weather { background: linear-gradient(180deg, #4facfe 0%, #00f2fe 100%); }
-        .bg-wallet { background: linear-gradient(180deg, #111 0%, #444 100%); }
+        /* App 颜色 */
+        .bg-photos { background: linear-gradient(45deg, #f09433 0%, #dc2743 50%, #bc1888 100%); }
+        .bg-weather { background: linear-gradient(180deg, #2980b9 0%, #6dd5fa 100%); }
+        .bg-wallet { background: linear-gradient(160deg, #2c3e50 0%, #000000 100%); }
         .bg-phone { background: linear-gradient(180deg, #5EE065 0%, #30C038 100%); }
-        .bg-safari { background: white; color: #2096F3; }
-        .bg-music { background: linear-gradient(180deg, #FF5B6E 0%, #E82A45 100%); }
+        .bg-safari { background: #fff; color: #007aff; }
+        .bg-music { background: linear-gradient(180deg, #fa3c55 0%, #e0253f 100%); }
+        
+        /* 聊天App图标 */
         .bg-chat { 
-            background: linear-gradient(135deg, #ffffff 0%, #f0f0f0 100%); 
+            background: linear-gradient(135deg, #ffffff 0%, #f2f2f2 100%); 
             color: #262626; 
-            border: 1px solid #efefef;
         }
 
-        /* Dock 栏 */
+        /* 底部 Dock 栏 */
         .dock-container {
             width: 100%;
-            padding: 0 15px;
+            padding: 15px;
             padding-bottom: calc(15px + env(safe-area-inset-bottom));
+            display: flex;
+            justify-content: center;
         }
 
         .dock {
+            width: 100%;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background-color: rgba(255, 255, 255, 0.35);
-            backdrop-filter: blur(25px);
-            -webkit-backdrop-filter: blur(25px);
-            border: 0.5px solid rgba(255, 255, 255, 0.4);
-            border-radius: 32px;
-            padding: 12px 18px;
-            height: 86px;
+            /* 毛玻璃 */
+            background-color: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 35px;
+            padding: 15px 20px;
         }
 
-        .dock .app-item { gap: 0; }
+        .dock .app-item { gap: 0; margin-bottom: 0; }
+        .dock .app-name { display: none; } /* Dock栏不显示名字 */
 
-        /* ================= 页面2：Ins 风格聊天页 ================= */
+        /* ================= 视图2：Ins 聊天 ================= */
         #chat-view {
             background-color: #ffffff;
             color: #262626;
             z-index: 20;
-            display: none; /* 默认隐藏 */
-            opacity: 0;    /* 初始透明，用来做动画 */
-            transform: scale(0.95);
-            transition: opacity 0.3s ease, transform 0.3s ease;
+            display: none; 
+            opacity: 0;
+            /* 初始化稍微放大，模仿App从图标弹出的效果 */
+            transform: scale(0.8); 
+            transform-origin: center bottom; /* 从下方弹出 */
+            transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s ease;
         }
 
-        /* 顶部导航栏 */
         .chat-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
             height: 44px;
-            padding: 0 8px;
-            padding-top: env(safe-area-inset-top); /* 刘海适配 */
-            border-bottom: 1px solid #dbdbdb;
+            padding: 0 10px;
+            padding-top: env(safe-area-inset-top);
+            border-bottom: 1px solid #efefef;
             background-color: #ffffff;
             flex-shrink: 0;
         }
 
-        .header-title { font-size: 16px; font-weight: 600; flex: 1; text-align: center; }
-        .header-left, .header-right { display: flex; align-items: center; min-width: 70px; }
-        .header-right { justify-content: flex-end; gap: 4px; }
+        .header-title { font-size: 16px; font-weight: 700; flex: 1; text-align: center; }
+        .btn-icon { background: none; border: none; padding: 8px; cursor: pointer; color: #262626; display: flex; align-items: center; }
+        .btn-icon svg { width: 24px; height: 24px; stroke-width: 1.8; }
 
-        /* 聊天互动按钮 */
-        .icon-btn {
-            background: none; border: none; cursor: pointer; display: flex;
-            align-items: center; justify-content: center; padding: 8px; color: #262626;
-        }
-        .icon-btn:active { opacity: 0.5; }
-        .icon-btn svg { width: 24px; height: 24px; stroke-width: 1.5; }
-
-        /* 聊天主体 */
         .chat-main {
-            flex: 1; overflow-y: auto; padding: 20px 15px;
-            display: flex; flex-direction: column; gap: 15px; background-color: #ffffff;
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: #fff;
         }
 
-        .msg { max-width: 75%; padding: 10px 15px; border-radius: 20px; font-size: 15px; line-height: 1.4; }
-        .msg.received { align-self: flex-start; background-color: #efefef; color: #000; }
+        .msg {
+            max-width: 75%;
+            padding: 12px 16px;
+            border-radius: 22px;
+            font-size: 15px;
+            line-height: 1.4;
+        }
+        .msg.received { align-self: flex-start; background-color: #f1f1f1; color: #000; }
         .msg.sent { align-self: flex-end; background-color: #efefef; border: 1px solid #dbdbdb; }
 
-        /* 底部输入栏 */
         .chat-footer {
-            display: flex; align-items: center; padding: 10px 12px;
-            padding-bottom: calc(10px + env(safe-area-inset-bottom));
-            background-color: #ffffff; border-top: 1px solid #dbdbdb; flex-shrink: 0; gap: 8px;
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            padding-bottom: calc(8px + env(safe-area-inset-bottom));
+            border-top: 1px solid #efefef;
+            background-color: #fff;
+            gap: 10px;
+            flex-shrink: 0;
         }
 
-        .input-wrapper {
-            flex: 1; display: flex; background-color: #fafafa; border: 1px solid #dbdbdb;
-            border-radius: 20px; padding: 2px 15px; align-items: center; min-height: 40px;
+        .input-box {
+            flex: 1;
+            background-color: #f3f3f3;
+            border-radius: 20px;
+            padding: 0 15px;
+            height: 42px;
+            display: flex;
+            align-items: center;
         }
-        .input-wrapper input { flex: 1; border: none; background: transparent; font-size: 15px; outline: none; }
-        .input-wrapper input::placeholder { color: #8e8e8e; }
-
-        .footer-left { display: flex; align-items: center; }
-        .footer-right { display: flex; align-items: center; gap: 4px; }
+        .input-box input {
+            width: 100%;
+            background: transparent;
+            border: none;
+            outline: none;
+            font-size: 15px;
+        }
 
     </style>
 </head>
 <body>
 
-    <!-- ================= 视图1：桌面 ================= -->
+    <!-- ======== 视图1：桌面 ======== -->
     <div id="desktop-view" class="page-view">
         <div class="status-bar-safe-area"></div>
         
-        <!-- 桌面占位图标 -->
+        <!-- 桌面图标 -->
         <div class="desktop-main">
-            <div class="app-item"><div class="app-icon bg-photos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="13" r="4"/><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/></svg></div><span class="app-name">照片</span></div>
-            <div class="app-item"><div class="app-icon bg-weather"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 22V16M16 20L12 16L8 20" stroke-linejoin="round"/><circle cx="12" cy="10" r="4"/></svg></div><span class="app-name">天气</span></div>
-            <div class="app-item"><div class="app-icon bg-wallet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg></div><span class="app-name">钱包</span></div>
+            <div class="app-item"><div class="app-icon bg-photos"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div><span class="app-name">照片</span></div>
+            <div class="app-item"><div class="app-icon bg-weather"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M6.34 17.66l-1.41 1.41"/><path d="M19.07 4.93l-1.41 1.41"/><circle cx="12" cy="12" r="5"/></svg></div><span class="app-name">天气</span></div>
+            <div class="app-item"><div class="app-icon bg-wallet"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg></div><span class="app-name">钱包</span></div>
         </div>
 
-        <!-- 底部 Dock 栏 -->
+        <!-- 底部 Dock -->
         <div class="dock-container">
             <div class="dock">
-                <div class="app-item"><div class="app-icon bg-phone"><svg viewBox="0 0 24 24" fill="none" stroke="white"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div></div>
-                <div class="app-item"><div class="app-icon bg-safari"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg></div></div>
+                <!-- 电话 -->
+                <div class="app-item"><div class="app-icon bg-phone"><svg viewBox="0 0 24 24" fill="white" stroke="none"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div></div>
                 
-                <!-- 点击核心触发：打开聊天APP -->
-                <div class="app-item" id="openChatApp">
-                    <div class="app-icon bg-chat">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    </div>
-                </div>
-
-                <div class="app-item"><div class="app-icon bg-music"><svg viewBox="0 0 24 24" fill="none" stroke="white"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div></div>
+                <!-- Safari -->
+                <div class="app-item"><div class="app-icon bg-safari"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg></div></div>
+                
+                <!-- 聊天 APP 入口 (点击这里) -->
+                <div class="app-item" id="openAppBtn"><div class="app-icon bg-chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div></div>
+                
+                <!-- 音乐 -->
+                <div class="app-item"><div class="app-icon bg-music"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div></div>
             </div>
         </div>
     </div>
 
-
-    <!-- ================= 视图2：聊天页面 ================= -->
+    <!-- ======== 视图2：聊天页面 ======== -->
     <div id="chat-view" class="page-view">
-        <!-- 聊天顶栏 -->
-        <div class="chat-header">
-            <div class="header-left">
-                <!-- 返回桌面按钮 -->
-                <button class="icon-btn" id="backBtn">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-                </button>
-            </div>
+        <!-- 顶栏 -->
+        <header class="chat-header">
+            <button class="btn-icon" id="backBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            </button>
             <div class="header-title">jennie_rubyjane</div>
-            <div class="header-right">
-                <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
-                <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></button>
+            <div style="display:flex; gap:5px;">
+                <button class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
+                <button class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></button>
             </div>
-        </div>
+        </header>
 
-        <!-- 聊天内容 -->
-        <div class="chat-main" id="chatBox">
-            <div class="msg received">✨ 这是纯单文件编写的交互体验演示。</div>
-            <div class="msg received">你可以自由在两个“页面”来回切换，没有任何延迟！</div>
-        </div>
+        <!-- 聊天流 -->
+        <main class="chat-main" id="chatBox">
+            <div class="msg received">Hi! 刚才的 Manifest 已经修复好了 📱</div>
+            <div class="msg received">现在添加到桌面，应该没有地址栏了，是全屏的！</div>
+            <div class="msg sent">好的，让我试试看。</div>
+        </main>
 
-        <!-- 聊天底栏 -->
-        <div class="chat-footer">
-            <div class="footer-left">
-                <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
-            </div>
-            <div class="input-wrapper">
+        <!-- 底栏 -->
+        <footer class="chat-footer">
+            <button class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></button>
+            <div class="input-box">
                 <input type="text" id="msgInput" placeholder="发消息...">
             </div>
-            <div class="footer-right">
-                <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
-                <button class="icon-btn" id="sendBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>
-            </div>
-        </div>
+            <button class="btn-icon" id="sendBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>
+        </footer>
     </div>
 
-    <!-- ================= JavaScript 控制逻辑 ================= -->
+    <!-- 逻辑控制 -->
     <script>
-        // --- 视图切换逻辑 ---
+        // 元素获取
         const desktopView = document.getElementById('desktop-view');
         const chatView = document.getElementById('chat-view');
-        const openChatApp = document.getElementById('openChatApp');
+        const openAppBtn = document.getElementById('openAppBtn');
         const backBtn = document.getElementById('backBtn');
-
-        // 打开 App (模仿系统缩放进入动画)
-        openChatApp.addEventListener('click', () => {
-            chatView.style.display = 'flex'; // 先显示出来
-            // 使用少量延迟让浏览器渲染 display:flex 后再触发动画，保证丝滑
-            setTimeout(() => {
-                desktopView.style.transform = 'scale(0.95)';
-                desktopView.style.opacity = '0';
-                chatView.style.opacity = '1';
-                chatView.style.transform = 'scale(1)';
-            }, 10);
-            
-            // 动画结束后彻底隐藏桌面
-            setTimeout(() => {
-                desktopView.style.display = 'none';
-            }, 300);
-        });
-
-        // 退出 App
-        backBtn.addEventListener('click', () => {
-            desktopView.style.display = 'flex';
-            setTimeout(() => {
-                chatView.style.opacity = '0';
-                chatView.style.transform = 'scale(0.95)';
-                desktopView.style.opacity = '1';
-                desktopView.style.transform = 'scale(1)';
-            }, 10);
-
-            setTimeout(() => {
-                chatView.style.display = 'none';
-            }, 300);
-        });
-
-
-        // --- 聊天框发送逻辑 ---
         const input = document.getElementById('msgInput');
         const sendBtn = document.getElementById('sendBtn');
         const chatBox = document.getElementById('chatBox');
+
+        // ======== 1. APP 开启与关闭逻辑 ========
         
+        // 打开 APP
+        openAppBtn.addEventListener('click', () => {
+            // 先让chatView显示（此时是透明的）
+            chatView.style.display = 'flex';
+            
+            // 简单的动画帧延迟，确保CSS过渡执行
+            requestAnimationFrame(() => {
+                // 桌面：压暗 + 缩小 + 变透明
+                desktopView.style.transform = 'scale(1.2)';
+                desktopView.style.opacity = '0';
+                
+                // 聊天页：还原大小 + 显现
+                chatView.style.opacity = '1';
+                chatView.style.transform = 'scale(1)';
+            });
+
+            // 动画结束后隐藏桌面层
+            setTimeout(() => {
+                desktopView.style.display = 'none';
+            }, 350);
+        });
+
+        // 关闭/返回 APP
+        backBtn.addEventListener('click', () => {
+            desktopView.style.display = 'flex';
+            
+            requestAnimationFrame(() => {
+                // 桌面：还原
+                desktopView.style.transform = 'scale(1)';
+                desktopView.style.opacity = '1';
+                
+                // 聊天页：缩小 + 消失
+                chatView.style.opacity = '0';
+                chatView.style.transform = 'scale(0.8)';
+            });
+
+            setTimeout(() => {
+                chatView.style.display = 'none';
+            }, 350);
+        });
+
+        // ======== 2. 发送消息逻辑 ========
         function sendMessage() {
-            const text = input.value.trim();
-            if (text) {
-                // 创建和插入发出的消息
-                const msgDiv = document.createElement('div');
-                msgDiv.className = 'msg sent';
-                msgDiv.innerText = text;
-                chatBox.appendChild(msgDiv);
-                chatBox.scrollTop = chatBox.scrollHeight;
-                input.value = '';
-                
-                // 模拟收到的回复
-                setTimeout(() => {
-                    const replyDiv = document.createElement('div');
-                    replyDiv.className = 'msg received';
-                    replyDiv.innerText = '单文件体验是不是太酷了😎？';
-                    chatBox.appendChild(replyDiv);
-                    chatBox.scrollTop = chatBox.scrollHeight;
-                }, 800);
-                
-                // 重置发送图标
-                input.dispatchEvent(new Event('input'));
-            }
+            const val = input.value.trim();
+            if (!val) return;
+
+            // 自己的消息
+            const div = document.createElement('div');
+            div.className = 'msg sent';
+            div.innerText = val;
+            chatBox.appendChild(div);
+            
+            input.value = '';
+            updateSendIcon('');
+            scrollToBottom();
+
+            // 模拟回复
+            setTimeout(() => {
+                const reply = document.createElement('div');
+                reply.className = 'msg received';
+                reply.innerText = '完美全屏！效果不错吧？✨';
+                chatBox.appendChild(reply);
+                scrollToBottom();
+            }, 800);
         }
 
-        // 发送事件绑定
-        sendBtn.addEventListener('click', sendMessage);
-        input.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
-        });
+        function scrollToBottom() {
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
 
-        // 根据是否有文字切换输入框最右侧图标
-        input.addEventListener('input', function() {
-            if (this.value.trim().length > 0) {
+        // 监听按钮
+        sendBtn.addEventListener('click', sendMessage);
+        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage() });
+
+        // 输入框图标变化逻辑
+        input.addEventListener('input', (e) => updateSendIcon(e.target.value));
+
+        function updateSendIcon(val) {
+            if (val.trim().length > 0) {
+                // 纸飞机图标
                 sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#262626" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
             } else {
+                // 照片图标
                 sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
             }
-        });
+        }
     </script>
 </body>
 </html>

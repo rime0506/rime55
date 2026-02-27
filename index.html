@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-visual">
     <title>芽芽机</title>
     
     <!-- PWA 配置 (Manifest 生成逻辑在 script.js 中) -->
@@ -17,7 +17,7 @@
     <link rel="apple-touch-icon" href="https://img.heliar.top/file/1770541813634_无标题434_20260208170943.png">
     
     <!-- 引入外部样式表 - 添加版本号防止缓存 -->
-    <link rel="stylesheet" href="style.css?v=5.0">
+    <link rel="stylesheet" href="style.css?v=6.0">
     
     <!-- Font Awesome 图标库 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
@@ -169,6 +169,14 @@
                             <div class="icon"></div>
                             <div class="name">查手机</div>
                         </div>
+                        <div class="app-icon" id="icon-placeholder">
+                            <div class="icon"></div>
+                            <div class="name">占位</div>
+                        </div>
+                        <div class="app-icon" id="icon-placeholder2">
+                            <div class="icon"></div>
+                            <div class="name">站位</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -243,6 +251,7 @@
             <div class="save-btn" onclick="saveAllSetting()">保存设置</div>
         </div>
 
+        <div class="custom-page-body">
         <!-- 折叠项1：桌面设置（合并壁纸/图标/小组件/拍立得/头像/倒数日/颜色） -->
         <div class="custom-item" onclick="toggleExpand('expand1')">
             <div class="custom-item-text">桌面设置</div>
@@ -468,6 +477,11 @@
                 </div>
                 <div class="custom-item" onclick="clearCustomCSS()" style="flex:1; background:#fff0f0; justify-content:center;">
                     <div class="custom-item-text" style="color:#e57373; text-align:center;">↺ 清空CSS</div>
+                </div>
+            </div>
+            <div style="margin-top:8px;">
+                <div class="custom-item" onclick="showCSSClassReference()" style="background:#f0f4ff; justify-content:center;">
+                    <div class="custom-item-text" style="text-align:center; color:#5b7ddb;">📋 查看类名参考</div>
                 </div>
             </div>
             <div class="custom-edit-tip" style="margin-top:8px; font-size:11px; color:#bbb; line-height:1.5;">
@@ -720,6 +734,7 @@
                 导出文件为 JSON 格式。含图片链接的装修包体积较小，含本地上传图片（base64）的装修包体积会较大。
             </div>
         </div>
+        </div><!-- .custom-page-body end -->
     </div>
 
     <!-- 系统设置页面 -->
@@ -769,6 +784,14 @@
                     <div class="setting-item-text">诊断面板</div>
                     <div style="color: #999; font-size: 12px;">查看 user_id 和订阅状态</div>
                     <div class="setting-arrow">›</div>
+                </div>
+                <div class="setting-item" onclick="document.getElementById('mc-console-switch').click()">
+                    <div class="setting-item-text">📱 移动端控制台</div>
+                    <div style="color: #999; font-size: 12px;">实时查看日志输出，方便手机调试</div>
+                    <label class="ios-switch" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="mc-console-switch" onchange="window._mcEnableConsole(this.checked)" />
+                        <span class="slider"></span>
+                    </label>
                 </div>
             </div>
 
@@ -5196,6 +5219,10 @@
                 <div style="font-size:15px; font-weight:500; color:#333; margin-bottom:4px;">自定义预设</div>
                 <div style="font-size:12px; color:#999; margin-bottom:12px;">追加到系统提示词末尾，可用于自定义场景、地点、规则等。留空则使用默认设定。</div>
                 <textarea id="offline-custom-preset" placeholder="例如：&#10;场景是在一家安静的咖啡厅里，窗外下着小雨...&#10;&#10;或者：&#10;请使用更加文学化的描写风格，多使用比喻和象征手法。" style="width:100%; min-height:150px; border:1px solid #e0e0e0; background:#fafafa; padding:12px; border-radius:8px; font-size:14px; color:#333; line-height:1.6; resize:vertical; outline:none; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;" onfocus="this.style.borderColor='#ffb3d1'" onblur="this.style.borderColor='#e0e0e0'"></textarea>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button onclick="saveOfflinePresetAs('preset')" style="flex:1; padding:8px; background:#f0f4ff; color:#5b7ddb; border:1px solid #d8e2f8; border-radius:8px; font-size:13px; cursor:pointer; font-weight:500;">💾 保存为预设</button>
+                    <button onclick="showOfflinePresetList('preset')" style="flex:1; padding:8px; background:#fff7fa; color:#e77fa0; border:1px solid #fce0ea; border-radius:8px; font-size:13px; cursor:pointer; font-weight:500;">📂 加载预设</button>
+                </div>
             </div>
 
             <!-- 自定义气泡CSS -->
@@ -5210,6 +5237,10 @@
                     <code style="background:#f5f5f5; padding:1px 4px; border-radius:3px; font-size:11px;">.offline-msg-avatar</code> 头像
                 </div>
                 <textarea id="offline-custom-bubble-css" placeholder="例如：&#10;.offline-msg-bubble {&#10;  border-radius: 18px;&#10;  border: none;&#10;  box-shadow: 0 1px 3px rgba(0,0,0,0.1);&#10;}&#10;.offline-bubble-self {&#10;  background: #e8f5e9;&#10;}" style="width:100%; min-height:120px; border:1px solid #e0e0e0; background:#fafafa; padding:12px; border-radius:8px; font-size:13px; color:#333; line-height:1.6; resize:vertical; outline:none; box-sizing:border-box; font-family:'Courier New', monospace;" onfocus="this.style.borderColor='#ffb3d1'" onblur="this.style.borderColor='#e0e0e0'"></textarea>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button onclick="saveOfflinePresetAs('bubblecss')" style="flex:1; padding:8px; background:#f0f4ff; color:#5b7ddb; border:1px solid #d8e2f8; border-radius:8px; font-size:13px; cursor:pointer; font-weight:500;">💾 保存为预设</button>
+                    <button onclick="showOfflinePresetList('bubblecss')" style="flex:1; padding:8px; background:#fff7fa; color:#e77fa0; border:1px solid #fce0ea; border-radius:8px; font-size:13px; cursor:pointer; font-weight:500;">📂 加载预设</button>
+                </div>
             </div>
 
             <!-- 保存按钮 -->

@@ -19,22 +19,22 @@
         /* 基础设置 */
         html {
             width: 100%;
-            height: 100%; /* PWA 必须使用 100% 才能彻底撑满屏幕，不能用 vh/dvh */
+            height: 100%;
             margin: 0;
             padding: 0;
             overflow: hidden;
             -webkit-text-size-adjust: 100%;
             -moz-text-size-adjust: 100%;
             text-size-adjust: 100%;
-            background-color: #fff; /* 与 body 背景色统一，防止出现异色边缘 */
+            background-color: #000;
         }
         body {
             width: 100%;
-            height: 100%; /* 使用 100% 避免 iOS vh 计算 bug */
+            height: 100%;
+            min-height: 100vh; /* 🔧 确保 body 背景覆盖整个 viewport（含 iOS safe area） */
             margin: 0;
             padding: 0;
             overflow: hidden;
-            /* 🔧 阻止安卓系统字体缩放影响页面布局（防止按钮/UI元素因系统大字体而溢出屏幕） */
             -webkit-text-size-adjust: 100%;
             -moz-text-size-adjust: 100%;
             text-size-adjust: 100%;
@@ -60,13 +60,13 @@ body {
 }
 .phone {
     width: 100%;
-    height: 100vh;
+    height: 100%;
     position: relative;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    padding: 0 8px env(safe-area-inset-bottom, 0px);
+    padding: 0 8px;
     margin: 0;
 }
 
@@ -415,7 +415,8 @@ body.standalone-mode .chat-detail-page {
             align-items: center;
             z-index: 20;
             flex-shrink: 0;
-            margin: 0 auto;
+            /* 🔧 用 env(safe-area-inset-bottom) 动态避开 iOS 底部小白条 */
+            margin: 0 auto env(safe-area-inset-bottom, 0px);
             align-self: center;
             overflow: hidden;
         }
@@ -483,15 +484,16 @@ body.standalone-mode .chat-detail-page {
 
         /* 个性化设置 - 纯折叠展开式 核心样式 */
         .custom-page {
-            width: 100vw;
-            height: 100%;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            width: 100%;
             background: #ffffff;
-            padding: 100px 24px 20px;
             display: none;
             flex-direction: column;
-            gap: 10px;
-            position: relative;
-            overflow-y: auto;
+            z-index: 100;
         }
         .custom-page-header {
             position: fixed;
@@ -504,6 +506,18 @@ body.standalone-mode .chat-detail-page {
             padding: 50px 24px 16px; /* 加高顶栏 */
             background: #fff;
             z-index: 99;
+        }
+        /* 个性化设置页面 - 独立滚动容器（block布局确保手机滚动兼容） */
+        .custom-page-body {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch; /* iOS 平滑滚动 */
+            overscroll-behavior: contain; /* 防止滚动穿透 */
+            padding: 100px 24px calc(40px + env(safe-area-inset-bottom, 0px));
         }
         .custom-page-title {
             font-size: 20px;

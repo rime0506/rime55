@@ -1,3 +1,376 @@
+// ==================== 📱 移动端实时控制台 (MobileConsole) ====================
+// 拦截 console 输出，在页面上显示浮动控制台，方便手机端调试
+(function() {
+    const MC_MAX_LOGS = 500;
+    const mcLogs = [];
+    let mcVisible = false;
+    let mcFilter = 'all'; // all | log | warn | error | info
+    let mcSearchText = '';
+    let mcPaused = false;
+    let mcPanel = null;
+    let mcFab = null;
+    let mcUnread = 0;
+
+    // 保存原始 console 方法
+    const _origLog = console.log.bind(console);
+    const _origWarn = console.warn.bind(console);
+    const _origError = console.error.bind(console);
+    const _origInfo = console.info.bind(console);
+    const _origDebug = console.debug.bind(console);
+
+    function formatArg(arg) {
+        if (arg === null) return 'null';
+        if (arg === undefined) return 'undefined';
+        if (typeof arg === 'string') return arg;
+        if (arg instanceof Error) return `${arg.name}: ${arg.message}\n${arg.stack || ''}`;
+        if (typeof arg === 'object') {
+            try { return JSON.stringify(arg, null, 2); }
+            catch (e) { return String(arg); }
+        }
+        return String(arg);
+    }
+
+    function addMcLog(level, args) {
+        const entry = {
+            id: Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+            time: new Date(),
+            level: level,
+            text: Array.from(args).map(formatArg).join(' ')
+        };
+        mcLogs.push(entry);
+        if (mcLogs.length > MC_MAX_LOGS) mcLogs.splice(0, mcLogs.length - MC_MAX_LOGS);
+
+        if (!mcVisible) {
+            mcUnread++;
+            updateFabBadge();
+        }
+        if (mcVisible && !mcPaused) {
+            appendLogEntry(entry);
+            autoScrollLogs();
+        }
+    }
+
+    // 拦截 console
+    console.log = function() { _origLog.apply(console, arguments); addMcLog('log', arguments); };
+    console.warn = function() { _origWarn.apply(console, arguments); addMcLog('warn', arguments); };
+    console.error = function() { _origError.apply(console, arguments); addMcLog('error', arguments); };
+    console.info = function() { _origInfo.apply(console, arguments); addMcLog('info', arguments); };
+    console.debug = function() { _origDebug.apply(console, arguments); addMcLog('debug', arguments); };
+
+    // 捕获全局错误
+    window.addEventListener('error', function(e) {
+        addMcLog('error', [`[GlobalError] ${e.message}`, `at ${e.filename}:${e.lineno}:${e.colno}`]);
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+        addMcLog('error', [`[UnhandledPromise] ${e.reason}`]);
+    });
+
+    const MC_COLORS = {
+        log: { bg: 'transparent', color: '#333', border: 'transparent' },
+        info: { bg: '#e8f4fd', color: '#0d6efd', border: '#b6d4fe' },
+        warn: { bg: '#fff8e1', color: '#b8860b', border: '#ffe082' },
+        error: { bg: '#fdecea', color: '#d32f2f', border: '#f5c6cb' },
+        debug: { bg: '#f3e5f5', color: '#7b1fa2', border: '#ce93d8' }
+    };
+
+    function getTimeStr(d) {
+        return d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    }
+
+    function escHtml(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function createLogEntryHtml(entry) {
+        const c = MC_COLORS[entry.level] || MC_COLORS.log;
+        const levelIcon = { log: '📝', info: 'ℹ️', warn: '⚠️', error: '❌', debug: '🔍' }[entry.level] || '📝';
+        const textEsc = escHtml(entry.text);
+        // 如果文本超过200字符，截断并支持展开
+        const isLong = entry.text.length > 200;
+        const shortText = isLong ? escHtml(entry.text.substring(0, 200)) + '...' : textEsc;
+
+        return `<div class="mc-log-entry" data-level="${entry.level}" data-id="${entry.id}" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;line-height:1.5;background:${c.bg};border-left:3px solid ${c.border};word-break:break-all;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+                <span style="color:${c.color};font-weight:600;font-size:11px;">${levelIcon} ${entry.level.toUpperCase()}</span>
+                <span style="color:#aaa;font-size:10px;font-family:monospace;">${getTimeStr(entry.time)}</span>
+            </div>
+            <div class="mc-log-text" style="color:${c.color};font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11.5px;white-space:pre-wrap;${isLong ? 'cursor:pointer;' : ''}" ${isLong ? `onclick="this.textContent=this.getAttribute('data-full')" data-full="${textEsc.replace(/"/g, '&quot;')}"` : ''}>${shortText}</div>
+        </div>`;
+    }
+
+    function appendLogEntry(entry) {
+        if (!mcPanel) return;
+        const container = mcPanel.querySelector('#mc-log-container');
+        if (!container) return;
+        // 过滤检查
+        if (mcFilter !== 'all' && entry.level !== mcFilter) return;
+        if (mcSearchText && !entry.text.toLowerCase().includes(mcSearchText.toLowerCase())) return;
+        container.insertAdjacentHTML('beforeend', createLogEntryHtml(entry));
+    }
+
+    function autoScrollLogs() {
+        if (!mcPanel) return;
+        const container = mcPanel.querySelector('#mc-log-container');
+        if (container) {
+            requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+        }
+    }
+
+    function renderAllLogs() {
+        if (!mcPanel) return;
+        const container = mcPanel.querySelector('#mc-log-container');
+        if (!container) return;
+        const filtered = mcLogs.filter(e => {
+            if (mcFilter !== 'all' && e.level !== mcFilter) return false;
+            if (mcSearchText && !e.text.toLowerCase().includes(mcSearchText.toLowerCase())) return false;
+            return true;
+        });
+        container.innerHTML = filtered.map(createLogEntryHtml).join('');
+        autoScrollLogs();
+    }
+
+    function updateFilterBtns() {
+        if (!mcPanel) return;
+        mcPanel.querySelectorAll('.mc-filter-btn').forEach(btn => {
+            const f = btn.getAttribute('data-filter');
+            btn.style.background = f === mcFilter ? '#ffb3d1' : '#f5f5f5';
+            btn.style.color = f === mcFilter ? '#fff' : '#666';
+            btn.style.fontWeight = f === mcFilter ? '600' : '400';
+        });
+    }
+
+    function updateFabBadge() {
+        if (!mcFab) return;
+        const badge = mcFab.querySelector('.mc-badge');
+        if (badge) {
+            if (mcUnread > 0) {
+                badge.textContent = mcUnread > 99 ? '99+' : mcUnread;
+                badge.style.display = 'flex';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    }
+
+    function getLogCounts() {
+        const counts = { all: mcLogs.length, log: 0, info: 0, warn: 0, error: 0 };
+        mcLogs.forEach(e => { if (counts[e.level] !== undefined) counts[e.level]++; });
+        return counts;
+    }
+
+    function updateCountBadges() {
+        if (!mcPanel) return;
+        const counts = getLogCounts();
+        mcPanel.querySelectorAll('.mc-filter-btn').forEach(btn => {
+            const f = btn.getAttribute('data-filter');
+            const countSpan = btn.querySelector('.mc-count');
+            if (countSpan && counts[f] !== undefined) {
+                countSpan.textContent = counts[f];
+            }
+        });
+    }
+
+    function createPanel() {
+        if (mcPanel) { mcPanel.remove(); mcPanel = null; }
+
+        mcPanel = document.createElement('div');
+        mcPanel.id = 'mc-console-panel';
+        mcPanel.style.cssText = `position:fixed;bottom:0;left:0;right:0;height:55vh;background:#fff;z-index:99999;display:flex;flex-direction:column;box-shadow:0 -4px 20px rgba(0,0,0,0.15);border-top-left-radius:16px;border-top-right-radius:16px;transition:transform 0.3s cubic-bezier(0.4,0,0.2,1);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;`;
+
+        // 头部拖拽条 + 工具栏
+        mcPanel.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:center;padding:8px 0 4px;cursor:grab;" id="mc-drag-handle">
+                <div style="width:40px;height:4px;background:#ddd;border-radius:2px;"></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 12px 8px;">
+                <div style="font-size:14px;font-weight:600;color:#333;">📱 控制台</div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button id="mc-btn-pause" onclick="window._mcTogglePause()" style="padding:4px 10px;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:6px;font-size:11px;cursor:pointer;color:#666;">⏸ 暂停</button>
+                    <button onclick="window._mcClearLogs()" style="padding:4px 10px;background:#fff0f0;border:1px solid #fcc;border-radius:6px;font-size:11px;cursor:pointer;color:#d32f2f;">🗑 清空</button>
+                    <button onclick="window._mcExportLogs()" style="padding:4px 10px;background:#f0f4ff;border:1px solid #d8e2f8;border-radius:6px;font-size:11px;cursor:pointer;color:#5b7ddb;">📤 导出</button>
+                    <button onclick="window._mcHideConsole()" style="width:28px;height:28px;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:50%;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;">✕</button>
+                </div>
+            </div>
+            <div style="display:flex;gap:4px;padding:0 12px 8px;flex-wrap:wrap;align-items:center;">
+                <button class="mc-filter-btn" data-filter="all" onclick="window._mcSetFilter('all')" style="padding:3px 8px;border-radius:12px;border:none;font-size:11px;cursor:pointer;">全部 <span class="mc-count">0</span></button>
+                <button class="mc-filter-btn" data-filter="log" onclick="window._mcSetFilter('log')" style="padding:3px 8px;border-radius:12px;border:none;font-size:11px;cursor:pointer;">Log <span class="mc-count">0</span></button>
+                <button class="mc-filter-btn" data-filter="info" onclick="window._mcSetFilter('info')" style="padding:3px 8px;border-radius:12px;border:none;font-size:11px;cursor:pointer;">Info <span class="mc-count">0</span></button>
+                <button class="mc-filter-btn" data-filter="warn" onclick="window._mcSetFilter('warn')" style="padding:3px 8px;border-radius:12px;border:none;font-size:11px;cursor:pointer;">Warn <span class="mc-count">0</span></button>
+                <button class="mc-filter-btn" data-filter="error" onclick="window._mcSetFilter('error')" style="padding:3px 8px;border-radius:12px;border:none;font-size:11px;cursor:pointer;">Error <span class="mc-count">0</span></button>
+                <div style="flex:1;min-width:80px;margin-left:4px;">
+                    <input type="text" id="mc-search-input" placeholder="🔍 搜索日志..." oninput="window._mcOnSearch(this.value)" style="width:100%;padding:4px 8px;border:1px solid #e0e0e0;border-radius:8px;font-size:11px;outline:none;box-sizing:border-box;" />
+                </div>
+            </div>
+            <div id="mc-log-container" style="flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;background:#fafafa;"></div>
+            <div id="mc-status-bar" style="padding:4px 12px;font-size:10px;color:#aaa;border-top:1px solid #f0f0f0;display:flex;justify-content:space-between;background:#fff;">
+                <span id="mc-status-count">共 0 条</span>
+                <span id="mc-status-mem"></span>
+            </div>
+        `;
+
+        document.body.appendChild(mcPanel);
+        updateFilterBtns();
+        updateCountBadges();
+        renderAllLogs();
+        updateStatusBar();
+
+        // 拖拽调整高度
+        let startY = 0, startH = 0, isDragging = false;
+        const handle = mcPanel.querySelector('#mc-drag-handle');
+        handle.addEventListener('touchstart', (e) => {
+            isDragging = true;
+            startY = e.touches[0].clientY;
+            startH = mcPanel.offsetHeight;
+            e.preventDefault();
+        }, { passive: false });
+        document.addEventListener('touchmove', (e) => {
+            if (!isDragging) return;
+            const dy = startY - e.touches[0].clientY;
+            const newH = Math.max(150, Math.min(window.innerHeight * 0.9, startH + dy));
+            mcPanel.style.height = newH + 'px';
+        }, { passive: true });
+        document.addEventListener('touchend', () => { isDragging = false; });
+    }
+
+    function updateStatusBar() {
+        if (!mcPanel) return;
+        const countEl = mcPanel.querySelector('#mc-status-count');
+        const memEl = mcPanel.querySelector('#mc-status-mem');
+        if (countEl) countEl.textContent = `共 ${mcLogs.length} 条`;
+        if (memEl && performance && performance.memory) {
+            const used = (performance.memory.usedJSHeapSize / 1048576).toFixed(1);
+            const total = (performance.memory.totalJSHeapSize / 1048576).toFixed(1);
+            memEl.textContent = `内存: ${used}/${total}MB`;
+        }
+    }
+
+    function createFab() {
+        if (mcFab) return;
+        mcFab = document.createElement('div');
+        mcFab.id = 'mc-fab';
+        mcFab.style.cssText = `position:fixed;bottom:80px;right:12px;width:44px;height:44px;background:linear-gradient(135deg,#ffb3d1,#ff8fbc);border-radius:50%;z-index:99998;display:none;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 12px rgba(255,143,188,0.4);font-size:20px;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform 0.2s;`;
+        mcFab.innerHTML = `<span style="pointer-events:none;">🖥</span><span class="mc-badge" style="display:none;position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;background:#ff3b30;color:#fff;border-radius:9px;font-size:10px;font-weight:600;align-items:center;justify-content:center;padding:0 4px;pointer-events:none;"></span>`;
+        mcFab.onclick = () => { window._mcShowConsole(); };
+        document.body.appendChild(mcFab);
+
+        // 拖拽移动FAB
+        let fabDragging = false, fabStartX = 0, fabStartY = 0, fabOrigX = 0, fabOrigY = 0, fabMoved = false;
+        mcFab.addEventListener('touchstart', (e) => {
+            fabDragging = true; fabMoved = false;
+            fabStartX = e.touches[0].clientX; fabStartY = e.touches[0].clientY;
+            const rect = mcFab.getBoundingClientRect();
+            fabOrigX = rect.left; fabOrigY = rect.top;
+            mcFab.style.transition = 'none';
+            e.preventDefault();
+        }, { passive: false });
+        document.addEventListener('touchmove', (e) => {
+            if (!fabDragging) return;
+            const dx = e.touches[0].clientX - fabStartX;
+            const dy = e.touches[0].clientY - fabStartY;
+            if (Math.abs(dx) > 5 || Math.abs(dy) > 5) fabMoved = true;
+            const nx = Math.max(0, Math.min(window.innerWidth - 44, fabOrigX + dx));
+            const ny = Math.max(0, Math.min(window.innerHeight - 44, fabOrigY + dy));
+            mcFab.style.left = nx + 'px'; mcFab.style.top = ny + 'px';
+            mcFab.style.right = 'auto'; mcFab.style.bottom = 'auto';
+        }, { passive: true });
+        document.addEventListener('touchend', () => {
+            if (!fabDragging) return;
+            fabDragging = false;
+            mcFab.style.transition = 'transform 0.2s';
+            if (fabMoved) {
+                // 吸附到最近的边
+                const rect = mcFab.getBoundingClientRect();
+                const centerX = rect.left + 22;
+                if (centerX < window.innerWidth / 2) {
+                    mcFab.style.left = '12px'; mcFab.style.right = 'auto';
+                } else {
+                    mcFab.style.left = 'auto'; mcFab.style.right = '12px';
+                }
+            }
+        });
+    }
+
+    // 全局方法暴露
+    window._mcShowConsole = function() {
+        mcVisible = true; mcUnread = 0; updateFabBadge();
+        if (mcFab) mcFab.style.display = 'none';
+        createPanel();
+    };
+    window._mcHideConsole = function() {
+        mcVisible = false;
+        if (mcPanel) { mcPanel.remove(); mcPanel = null; }
+        if (mcFab && localStorage.getItem('mc_console_enabled') === 'true') {
+            mcFab.style.display = 'flex';
+        }
+    };
+    window._mcTogglePause = function() {
+        mcPaused = !mcPaused;
+        const btn = mcPanel && mcPanel.querySelector('#mc-btn-pause');
+        if (btn) {
+            btn.textContent = mcPaused ? '▶ 继续' : '⏸ 暂停';
+            btn.style.background = mcPaused ? '#e8f5e9' : '#f5f5f5';
+            btn.style.color = mcPaused ? '#2e7d32' : '#666';
+        }
+    };
+    window._mcSetFilter = function(f) {
+        mcFilter = f;
+        updateFilterBtns();
+        renderAllLogs();
+    };
+    window._mcOnSearch = function(val) {
+        mcSearchText = val;
+        renderAllLogs();
+    };
+    window._mcClearLogs = function() {
+        mcLogs.length = 0;
+        renderAllLogs();
+        updateCountBadges();
+        updateStatusBar();
+    };
+    window._mcExportLogs = function() {
+        const text = mcLogs.map(e => `[${getTimeStr(e.time)}] [${e.level.toUpperCase()}] ${e.text}`).join('\n');
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `console_logs_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    // 启用/禁用控制台
+    window._mcEnableConsole = function(enabled) {
+        localStorage.setItem('mc_console_enabled', enabled ? 'true' : 'false');
+        if (enabled) {
+            createFab();
+            if (mcFab) mcFab.style.display = 'flex';
+        } else {
+            if (mcFab) mcFab.style.display = 'none';
+            if (mcPanel) { mcPanel.remove(); mcPanel = null; }
+            mcVisible = false;
+        }
+    };
+
+    // 页面加载后检查是否已启用
+    function mcInit() {
+        createFab();
+        if (localStorage.getItem('mc_console_enabled') === 'true') {
+            if (mcFab) mcFab.style.display = 'flex';
+        }
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', mcInit);
+    } else {
+        mcInit();
+    }
+
+    // 定时更新状态栏和计数
+    setInterval(() => {
+        if (mcVisible) { updateCountBadges(); updateStatusBar(); }
+    }, 3000);
+
+})();
+// ==================== END 移动端实时控制台 ====================
+
 // 全局异常兜底：防止未捕获的错误导致页面假死
 window.addEventListener('error', function(e) {
     console.error('[GlobalError]', e.message, e.filename, e.lineno);
@@ -57,19 +430,32 @@ if (_isPWAStandalone) {
 }
 
 // 移动端虚拟键盘适配
-// 原理：键盘弹起时 visualViewport.height 缩小，但 window.innerHeight（100vh）不变
+// 原理：键盘弹起时 visualViewport.height 缩小
 // 直接把 chat-window 高度设为可视视口高度，让整个底栏（输入框+按钮）都在键盘上方
 // PWA全屏模式特别处理：去掉安全区域padding + 对齐visualViewport偏移
+// 🔧 兼容性：部分 Android 手机键盘弹出时 window.innerHeight 也会缩小，
+//    导致 kbHeight 计算为 0，需要用初始高度做备用检测
 let _kbLastHeight = 0;
 let _kbLastTop = 0;
 let _kbRecalibrateTimer = null;
+const _kbInitialInnerHeight = window.innerHeight; // 🔧 记录初始屏幕高度，用于兼容 Android
 
 function applyKeyboardLayout() {
     const vp = window.visualViewport;
     if (!vp) return;
     
-    const kbHeight = Math.max(0, Math.round(window.innerHeight - vp.height));
+    // 🔧 主检测：visualViewport 高度 vs window.innerHeight
+    let kbHeight = Math.max(0, Math.round(window.innerHeight - vp.height));
     const vpTop = Math.round(vp.offsetTop || 0);
+    
+    // 🔧 备用检测：部分 Android 手机 window.innerHeight 也跟着键盘缩小
+    // 此时用初始记录的高度来检测
+    if (kbHeight < 50) {
+        const fallbackKb = Math.max(0, Math.round(_kbInitialInnerHeight - vp.height));
+        if (fallbackKb > 50) {
+            kbHeight = fallbackKb;
+        }
+    }
     
     // 高度和偏移都没变时跳过
     if (kbHeight === _kbLastHeight && vpTop === _kbLastTop) return;
@@ -77,6 +463,13 @@ function applyKeyboardLayout() {
     _kbLastTop = vpTop;
     
     const isKeyboardUp = kbHeight > 50;
+    
+    // 🔧 防止浏览器因输入框聚焦而滚动整个页面（部分 Android 会出现）
+    if (isKeyboardUp) {
+        window.scrollTo(0, 0);
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+    }
     
     // 键盘弹起时：把聊天窗口高度缩到可视视口高度，整个底栏都在键盘上方
     // 键盘收起时：恢复原始状态（CSS bottom:0 自动撑满）
@@ -118,6 +511,9 @@ function applyKeyboardLayout() {
 }
 
 function handleKeyboardResize() {
+    // 🔧 防止页面因键盘弹出产生滚动偏移
+    window.scrollTo(0, 0);
+    
     // 立即执行一次
     applyKeyboardLayout();
     
@@ -135,6 +531,15 @@ if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', handleKeyboardResize);
     window.visualViewport.addEventListener('scroll', applyKeyboardLayout);
 }
+
+// 🔧 监听 window resize 事件作为备用（部分 Android 浏览器不触发 visualViewport 事件）
+window.addEventListener('resize', function() {
+    // 只在有聊天窗口显示时处理
+    const anyVisible = document.querySelector('.chat-window[style*="display: flex"], .chat-window[style*="display:flex"]');
+    if (anyVisible) {
+        handleKeyboardResize();
+    }
+});
 
 // 初始化DEXie数据库
 const db = new Dexie('DesktopDB');
@@ -1211,6 +1616,10 @@ async function saveFinanceData(key, value) {
             if (notifSwitch) notifSwitch.checked = notifEnabled;
             if (debugSwitch) debugSwitch.checked = debugEnabled;
             if (keepaliveSwitch) keepaliveSwitch.checked = keepaliveEnabled;
+            
+            // 同步移动端控制台开关状态
+            const mcConsoleSwitch = document.getElementById('mc-console-switch');
+            if (mcConsoleSwitch) mcConsoleSwitch.checked = localStorage.getItem('mc_console_enabled') === 'true';
             
             // 如果保活已开启，等待用户交互后启动
             if (keepaliveEnabled) {
@@ -13592,7 +14001,7 @@ ${loreContext}
         }
 
         // 设置角色的聊天记录（按账号隔离）
-        // 🔧 修复数据丢失：始终从DB读取最新角色数据再保存，避免用旧 char 对象覆盖并发写入的新数据
+        // 🔧 修复数据丢失：使用 Dexie 事务将读-改-写原子化，杜绝并发覆盖
         // 🛡️ 增强：带重试 + 错误提醒 + 脏数据标记，防止静默丢数据
         async function setChatHistory(char, accountId, history) {
             // ✅ 如果用户正在查看这个聊天，自动标记新消息为已读
@@ -13607,66 +14016,135 @@ ${loreContext}
             // 🛡️ 先标记为脏数据，即使后续写入失败，定时器也能兜底保存
             markChatDirty(char.id, char, accountId, history);
             
-            // 🛡️ 使用 update() 只更新聊天记录字段，防止覆盖其他设置（如聊天详细里的所有设置）
-            const updatePayload = {};
-            
-            if (!accountId) {
-                // 兼容旧代码：如果没有账号ID，使用旧结构
-                updatePayload.chat_history = history;
-                char.chat_history = history; // 同步更新调用方的引用
-            } else {
-                // 🔧 需要读取最新的 chat_history_by_user 并合并，因为 update() 是字段级替换
-                let freshChatHistoryByUser;
-                try {
+            try {
+                // 🔒 使用 Dexie 事务将 "读取最新 → 合并 → 写入" 原子化
+                await db.transaction('rw', db.characters, async () => {
                     const freshChar = await db.characters.get(char.id);
                     if (!freshChar) {
                         console.warn('[setChatHistory] ⚠️ 角色不存在，跳过保存:', char.id);
                         return;
                     }
-                    freshChatHistoryByUser = freshChar.chat_history_by_user || {};
-                } catch (dbReadErr) {
-                    console.error('[setChatHistory] ❌ 数据库读取失败:', dbReadErr);
-                    // 读取失败时不丢弃数据，脏数据标记已打上，定时器会兜底
-                    return;
-                }
-                
-                freshChatHistoryByUser[accountId] = history;
-                updatePayload.chat_history_by_user = freshChatHistoryByUser;
-                
-                // 同步更新调用方的引用
-                if (!char.chat_history_by_user) char.chat_history_by_user = {};
-                char.chat_history_by_user[accountId] = history;
-            }
-            
-            // ✅ 如果有新消息（非空历史），自动清除聊天列表隐藏标记
-            if (history && history.length > 0 && accountId) {
-                try {
-                    const freshChar = await db.characters.get(char.id);
-                    if (freshChar && freshChar.chat_hidden_by_user && freshChar.chat_hidden_by_user[accountId]) {
-                        const hiddenByUser = { ...freshChar.chat_hidden_by_user };
-                        hiddenByUser[accountId] = false;
-                        updatePayload.chat_hidden_by_user = hiddenByUser;
+
+                    const updatePayload = {};
+
+                    if (!accountId) {
+                        updatePayload.chat_history = history;
+                    } else {
+                        const freshChatHistoryByUser = freshChar.chat_history_by_user || {};
+                        freshChatHistoryByUser[accountId] = history;
+                        updatePayload.chat_history_by_user = freshChatHistoryByUser;
                     }
-                } catch (_) {}
-            }
-            
-            // 🛡️ 使用 update() 只更新指定字段，不会覆盖设置/好友状态等其他数据
-            try {
-                const updated = await db.characters.update(char.id, updatePayload);
-                if (updated) {
-                    // 写入成功，清除脏标记
-                    _pendingDirtySaves.delete(char.id);
+
+                    // ✅ 如果有新消息，自动清除聊天列表隐藏标记
+                    if (history && history.length > 0 && accountId) {
+                        if (freshChar.chat_hidden_by_user && freshChar.chat_hidden_by_user[accountId]) {
+                            const hiddenByUser = { ...freshChar.chat_hidden_by_user };
+                            hiddenByUser[accountId] = false;
+                            updatePayload.chat_hidden_by_user = hiddenByUser;
+                        }
+                    }
+
+                    await db.characters.update(char.id, updatePayload);
+                });
+
+                // 事务成功 → 同步更新调用方的内存引用
+                if (!accountId) {
+                    char.chat_history = history;
                 } else {
-                    console.warn('[setChatHistory] ⚠️ update返回0，角色可能不存在:', char.id);
+                    if (!char.chat_history_by_user) char.chat_history_by_user = {};
+                    char.chat_history_by_user[accountId] = history;
                 }
+
+                // 写入成功，清除脏标记
+                _pendingDirtySaves.delete(char.id);
             } catch (err) {
                 console.error(`[setChatHistory] ❌ 聊天记录写入失败:`, err.message);
-                // 检查是否是配额不足
                 if (err.name === 'QuotaExceededError' || (err.inner && err.inner.name === 'QuotaExceededError')) {
                     try { showToast('⚠️ 存储空间不足，聊天记录可能无法保存！请导出备份。'); } catch(_) {}
                 }
                 // 写入失败，脏标记保留，定时器会继续尝试保存
             }
+        }
+
+        /**
+         * @author: jfzhou10
+         * @date: 2026-02-27
+         * @description: 原子追加聊天消息 —— 在 Dexie 事务内读取最新历史并追加新消息，
+         *              彻底消除 sendMessage 与 triggerAiReply 并发写入导致的消息丢失竞态。
+         *              返回追加后的完整历史数组（用于调用方同步内存引用）。
+         */
+        async function appendChatMessages(charId, accountId, newMessages) {
+            if (!newMessages || newMessages.length === 0) return null;
+
+            // 🛡️ 先打脏标记兜底
+            try {
+                const tmpChar = await db.characters.get(charId);
+                if (tmpChar) markChatDirty(charId, tmpChar, accountId,
+                    [...(getChatHistory(tmpChar, accountId) || []), ...newMessages]);
+            } catch (_) {}
+
+            let updatedHistory = null;
+
+            try {
+                await db.transaction('rw', db.characters, async () => {
+                    const freshChar = await db.characters.get(charId);
+                    if (!freshChar) {
+                        console.warn('[appendChatMessages] ⚠️ 角色不存在:', charId);
+                        return;
+                    }
+
+                    // 读取 DB 中最新历史
+                    let history;
+                    if (!accountId) {
+                        history = freshChar.chat_history || [];
+                    } else {
+                        const byUser = freshChar.chat_history_by_user || {};
+                        history = byUser[accountId] || [];
+                    }
+
+                    // ✅ 如果用户正在查看，标记新的角色消息为已读
+                    if (currentChatCharId === charId) {
+                        newMessages.forEach(m => {
+                            if (m.role === 'char' && !m.read) m.read = true;
+                        });
+                    }
+
+                    // 追加新消息
+                    history.push(...newMessages);
+                    updatedHistory = history;
+
+                    // 构建更新载荷
+                    const updatePayload = {};
+                    if (!accountId) {
+                        updatePayload.chat_history = history;
+                    } else {
+                        const byUser = freshChar.chat_history_by_user || {};
+                        byUser[accountId] = history;
+                        updatePayload.chat_history_by_user = byUser;
+                    }
+
+                    // 自动取消聊天列表隐藏标记
+                    if (history.length > 0 && accountId &&
+                        freshChar.chat_hidden_by_user && freshChar.chat_hidden_by_user[accountId]) {
+                        const hiddenByUser = { ...freshChar.chat_hidden_by_user };
+                        hiddenByUser[accountId] = false;
+                        updatePayload.chat_hidden_by_user = hiddenByUser;
+                    }
+
+                    await db.characters.update(charId, updatePayload);
+                });
+
+                // 事务成功 → 清除脏标记
+                _pendingDirtySaves.delete(charId);
+                console.log(`[appendChatMessages] ✅ 原子追加 ${newMessages.length} 条消息, charId=${charId}`);
+            } catch (err) {
+                console.error('[appendChatMessages] ❌ 写入失败:', err.message);
+                if (err.name === 'QuotaExceededError' || (err.inner && err.inner.name === 'QuotaExceededError')) {
+                    try { showToast('⚠️ 存储空间不足，聊天记录可能无法保存！请导出备份。'); } catch (_) {}
+                }
+            }
+
+            return updatedHistory;
         }
 
         // 数据迁移：将旧结构迁移到新结构（不影响现有数据）
@@ -20820,15 +21298,24 @@ ${existingChatsContext.join('\n\n')}
                 // 计算虚拟时间
                 const virtualTimeStr = getFormattedVirtualTime(char);
 
-                // ★ 读取线下模式聊天记录，用于后续合并到统一时间线（优先IndexedDB）
+                // ★ 读取线下模式聊天记录（安全网）
+                // 正常情况下离线消息已在退出线下模式时合并到主历史（hideOfflineMode）。
+                // 此处仅作为安全网，处理异常残留数据。
                 let _offlineHistoryAuto = [];
                 let _hasOfflineMemoryAuto = false;
                 try {
                     const parsed = await loadOfflineChatHistory(accountId, char.id);
                     if (parsed && parsed.length > 0) {
-                        _offlineHistoryAuto = parsed;
-                        _hasOfflineMemoryAuto = true;
-                        console.log('[triggerAutoChat] ✅ 已加载线下模式历史，条数:', parsed.length);
+                        // 检查主历史是否已包含线下消息（已合并标志）
+                        const mainHistory = getChatHistory(char, accountId) || [];
+                        const alreadyMerged = mainHistory.some(m => m._isOffline);
+                        if (!alreadyMerged) {
+                            _offlineHistoryAuto = parsed;
+                            _hasOfflineMemoryAuto = true;
+                            console.log('[triggerAutoChat] ⚠️ 检测到未合并的线下消息（安全网），条数:', parsed.length);
+                        } else {
+                            console.log('[triggerAutoChat] ✅ 线下消息已在主历史中，跳过安全网加载');
+                        }
                     }
                 } catch (e) {
                     console.warn('[triggerAutoChat] 读取线下模式历史失败:', e);
@@ -22976,8 +23463,6 @@ image_desc 字段：当 images > 0 时，用一句话描述配图内容。`;
             // 重新聚焦输入框，保持键盘不收起（方便连续发消息）
             input.focus();
 
-            let history = getChatHistory(char, accountId);
-
             // 2. 追加并显示用户消息（支持引用）
             // 🔧 使用虚拟时间，确保与快进生成的消息时间戳一致
             const virtualTime = Date.now() + getEffectiveTimeOffset(char);
@@ -22992,8 +23477,8 @@ image_desc 字段：当 images > 0 时，用一句话描述配图内容。`;
                 cancelQuote(); // 清除引用
             }
             
-            history.push(userMsg);
-            await setChatHistory(char, accountId, history); 
+            // 🔒 使用原子追加，避免与 AI 回复并发写入时丢失消息
+            await appendChatMessages(char.id, accountId, [userMsg]);
             
             // 🔥 优化：只有在有引用时才重新渲染，否则只追加消息
             if (userMsg.quote) {
@@ -25285,6 +25770,12 @@ name字段只能用这些名字 ${validMemberNames.join(' ')}
 
             messagesToRender.forEach((msg, relativeIndex) => {
                 const absoluteIndex = startIndex + relativeIndex;
+                
+                // 🔒 跳过隐藏的系统指令（如模式切换指令），不渲染到聊天界面
+                if (msg._isHidden) return;
+                // 🔒 线下消息不在线上页面渲染（线下消息有自己的页面 renderOfflineChatBody）
+                if (msg._isOffline) return;
+                
                 const prevMsgTime = absoluteIndex > 0 ? history[absoluteIndex - 1].time : null;
                 
                 // ★ fp模式：翻转消息角色（char→user显示在右侧，user→char显示在左侧）
@@ -29265,23 +29756,30 @@ messages:
                     }
                 }
 
-                // 2.5 ★ 线上线下统一时间线：将线下消息合并到fullHistory中按时间排序（优先IndexedDB）
+                // 2.5 ★ 线上线下统一时间线（安全网）
+                // 正常情况下，离线消息已在退出线下模式时合并到主历史（hideOfflineMode）。
+                // 此处仅处理异常残留（如用户未正常退出线下模式）的情况。
                 let _hasOfflineMemory = false;
                 try {
                     const offlineHistory = await loadOfflineChatHistory(accountId, targetCharId);
                     if (offlineHistory && offlineHistory.length > 0) {
                         _hasOfflineMemory = true;
-                        // 将线下消息标记后合并到fullHistory
-                        const offlineMsgs = offlineHistory.map(h => ({
-                            role: h.role === 'user' ? 'user' : 'char', // 统一角色标识
-                            content: h.content || '',
-                            time: h.time || 0,
-                            _isOffline: true // 标记为线下消息
-                        }));
-                        fullHistory = [...fullHistory, ...offlineMsgs];
-                        // 按时间排序，实现统一时间线
-                        fullHistory.sort((a, b) => (a.time || 0) - (b.time || 0));
-                        console.log('[triggerAiReply] ✅ 线上线下合并完成，线下消息:', offlineMsgs.length, '总消息:', fullHistory.length);
+                        // 检查是否已经合并过（主历史中是否已有 _isOffline 消息）
+                        const alreadyMerged = fullHistory.some(m => m._isOffline);
+                        if (!alreadyMerged) {
+                            console.log('[triggerAiReply] ⚠️ 检测到未合并的线下消息（安全网），执行运行时合并');
+                            const offlineMsgs = offlineHistory.map(h => ({
+                                role: h.role === 'user' ? 'user' : 'char',
+                                content: h.content || '',
+                                time: h.time || 0,
+                                _isOffline: true
+                            }));
+                            fullHistory = [...fullHistory, ...offlineMsgs];
+                            fullHistory.sort((a, b) => (a.time || 0) - (b.time || 0));
+                            console.log('[triggerAiReply] ✅ 安全网合并完成，线下消息:', offlineMsgs.length);
+                        } else {
+                            console.log('[triggerAiReply] ✅ 线下消息已在主历史中，跳过运行时合并');
+                        }
                     }
                 } catch (e) {
                     console.warn('[triggerAiReply] 合并线下消息失败:', e);
@@ -30006,8 +30504,8 @@ ${togetherListenInfo.isPlaying ? '正在播放中...' : '已暂停'}
                     .slice(-contextCount)
                     .filter(m => {
                         if (m.role !== 'system') return true;
-                        // 🔧 保留重要的系统事件消息（角色登录、伪造消息、转账操作等），过滤普通时间戳
-                        if (m.type === 'char_unblock_self' || m.type === 'fake_message_notice' || m.type === 'login_attempt_failed' || m.type === 'transfer_action') return true;
+                        // 🔧 保留重要的系统事件消息（角色登录、伪造消息、转账操作、模式切换等），过滤普通时间戳
+                        if (m.type === 'char_unblock_self' || m.type === 'fake_message_notice' || m.type === 'login_attempt_failed' || m.type === 'transfer_action' || m.type === 'mode_switch') return true;
                         return false;
                     })
                     .map(m => {
@@ -30031,6 +30529,14 @@ ${togetherListenInfo.isPlaying ? '正在播放中...' : '已暂停'}
                             return {
                                 role: role,
                                 content: `[线下见面] ${offlineContent}`
+                            };
+                        }
+                        
+                        // 模式切换指令：直接作为 system 角色发送给 AI，确保格式切换生效
+                        if (m.role === 'system' && m.type === 'mode_switch') {
+                            return {
+                                role: 'system',
+                                content: content
                             };
                         }
                         
@@ -30219,14 +30725,37 @@ ${togetherListenInfo.isPlaying ? '正在播放中...' : '已暂停'}
                 
                 // 🔧 修复：如果最后一条消息是 assistant（角色发的），需要添加一条 user 消息触发回复
                 // 否则 API 会认为"已经回复完了"，返回空 choices
+                // 🔒 安全增强：在判断前重新从 DB 读取最新历史，避免用户刚发的消息因竞态未包含在 messages 中
                 if (messages.length > 1) {
                     const lastMsg = messages[messages.length - 1];
                     if (lastMsg.role === 'assistant') {
-                        console.log('[triggerAiReply] ⚠️ 最后一条是角色消息，添加触发消息');
-                        messages.push({
-                            role: 'user',
-                            content: `[系统指令] 对方没有回复，请你作为${char.name}继续这个话题，自然地接着聊。可以是：追问、补充、分享新想法、或者换个相关话题。按照设定的回复条数（${char.reply_min_count || 1}-${char.reply_max_count || 3}条）来回复。`
-                        });
+                        // 🔧 双重检查：重新从 DB 读取最新历史，确认用户是否在 AI 构建上下文期间发了新消息
+                        let userActuallySent = false;
+                        try {
+                            const latestChar = await db.characters.get(targetCharId);
+                            if (latestChar) {
+                                const latestHistory = getChatHistory(latestChar, accountId);
+                                if (latestHistory.length > 0) {
+                                    const latestMsg = latestHistory[latestHistory.length - 1];
+                                    if (latestMsg.role === 'user') {
+                                        userActuallySent = true;
+                                        // 用户确实刚发了消息，把它加入 messages 中而不是注入"对方没回复"
+                                        console.log('[triggerAiReply] ✅ 双重检查发现用户新消息，加入上下文');
+                                        messages.push({ role: 'user', content: latestMsg.content });
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('[triggerAiReply] 双重检查读取失败:', e);
+                        }
+
+                        if (!userActuallySent) {
+                            console.log('[triggerAiReply] ⚠️ 最后一条是角色消息，添加触发消息');
+                            messages.push({
+                                role: 'user',
+                                content: `[系统指令] 对方没有回复，请你作为${char.name}继续这个话题，自然地接着聊。可以是：追问、补充、分享新想法、或者换个相关话题。按照设定的回复条数（${char.reply_min_count || 1}-${char.reply_max_count || 3}条）来回复。`
+                            });
+                        }
                     }
                 }
                 
@@ -32356,11 +32885,9 @@ ${checkResult.checkResult}
                             await new Promise(r => setTimeout(r, delay));
                         }
 
-                        // 始终存入 DB
+                        // 始终存入 DB —— 🔒 使用原子追加，防止与用户发消息并发写入时互相覆盖
                         const freshChar = await db.characters.get(targetCharId);
                         if (freshChar) {
-                            let history = getChatHistory(freshChar, accountId);
-                            
                             // ✅ 使用 buildCharMessage 一次性解析翻译，存储结构化数据
                             // 🔥 修复：第一条消息时传入 thought（心声）
                             const extraFields = { time: _vNow() };
@@ -32381,8 +32908,8 @@ ${checkResult.checkResult}
                             // ✅ 附加引用信息到第一个子消息（如果有）
                             if (quoteInfoReply && subIdx === 0) newMsg.quote = quoteInfoReply;
                             
-                            history.push(newMsg);
-                            await setChatHistory(freshChar, accountId, history);
+                            // 🔒 原子追加：在事务内读取最新历史再追加，避免覆盖用户刚发的消息
+                            await appendChatMessages(targetCharId, accountId, [newMsg]);
                             
                             // 只有在当前窗口匹配时才渲染 UI
                             if (currentChatCharId === targetCharId) {
@@ -35241,6 +35768,152 @@ function showLorebookPage() {
         document.getElementById('custom-css-input').value = '';
         applyCustomCSS();
         if (typeof showToast === 'function') showToast('已清空自定义CSS');
+    }
+
+    /**
+     * 显示CSS类名参考弹窗
+     * 列出聊天页面各区域的CSS类名，方便用户编写自定义CSS
+     */
+    function showCSSClassReference() {
+        let modal = document.getElementById('css-class-ref-modal');
+        if (modal) {
+            modal.style.display = 'flex';
+            return;
+        }
+        modal = document.createElement('div');
+        modal.id = 'css-class-ref-modal';
+        modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:10001; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);';
+        modal.onclick = function(e) { if (e.target === modal) modal.style.display = 'none'; };
+
+        const sections = [
+            {
+                title: '📱 聊天页面 · 整体结构',
+                items: [
+                    ['.chat-window', '聊天窗口（整个页面容器）'],
+                    ['.chat-header', '顶栏（包含返回/标题/按钮）'],
+                    ['.chat-back', '返回按钮（左上角 ←）'],
+                    ['.chat-title', '标题（角色名字）'],
+                    ['.chat-more', '右侧按钮（线下模式 / 聊天详情 ···）'],
+                    ['.chat-body', '消息列表区域（中间滚动区）'],
+                    ['.chat-footer', '底栏（输入框区域容器）'],
+                ]
+            },
+            {
+                title: '⌨️ 输入区域',
+                items: [
+                    ['.chat-input-bar', '输入栏（一行：魔法棒+输入框+按钮）'],
+                    ['.chat-icon-btn', '图标按钮（接收回复🪄 / 表情😊 / 菜单⊕）'],
+                    ['.chat-input', '文字输入框'],
+                    ['.chat-send-btn', '发送按钮'],
+                    ['.chat-panel-container', '底部面板容器（表情/菜单共用）'],
+                    ['.emoji-panel', '表情面板（Emoji 列表）'],
+                    ['.action-panel', '菜单面板（+号展开的功能面板）'],
+                    ['.action-panel-page', '菜单面板分页'],
+                    ['.action-item', '菜单功能项（语音/相册/转账等）'],
+                    ['.action-icon-box', '菜单功能项图标容器'],
+                    ['.action-name', '菜单功能项文字'],
+                ]
+            },
+            {
+                title: '💬 消息气泡',
+                items: [
+                    ['.message-row', '消息行（每条消息的容器）'],
+                    ['.message-row.other', '对方消息行'],
+                    ['.message-row.self', '我的消息行'],
+                    ['.message-content', '消息气泡（文字内容区）'],
+                    ['.ai-bubble', '对方气泡（用于角色单独CSS）'],
+                    ['.user-bubble', '我的气泡（用于角色单独CSS）'],
+                    ['.message-avatar', '消息头像'],
+                    ['.message-timestamp', '时间戳（消息间的时间分隔）'],
+                ]
+            },
+            {
+                title: '🎤 语音气泡',
+                items: [
+                    ['.voice-bubble', '语音消息气泡（整个语音条）'],
+                    ['.voice-bubble-header', '语音条头部（图标+波纹+时长）'],
+                    ['.voice-icon', '语音图标'],
+                    ['.voice-bars', '语音波纹动画'],
+                    ['.voice-duration', '语音时长文字'],
+                    ['.voice-text-content', '语音转文字内容（展开后显示）'],
+                    ['.message-row.other .voice-bubble', '对方语音气泡'],
+                    ['.message-row.self .voice-bubble', '我的语音气泡'],
+                ]
+            },
+            {
+                title: '💳 卡片消息',
+                items: [
+                    ['.transfer-card', '转账卡片'],
+                    ['.transfer-card.done', '已收款的转账卡片'],
+                    ['.transfer-card.returned', '已退回的转账卡片'],
+                    ['.t-amount', '转账金额'],
+                    ['.t-desc', '转账备注'],
+                    ['.t-footer', '转账底部状态栏'],
+                    ['.redpacket-card', '红包卡片'],
+                    ['.family-card-msg', '亲属卡消息卡片'],
+                    ['.spr-card', '专属红包 / 礼物卡片'],
+                    ['.intimate-req-card', '亲密关系请求卡片'],
+                    ['.location-card', '位置卡片（整体）'],
+                    ['.location-card-text', '位置卡片文字区'],
+                    ['.location-card-name', '位置名称'],
+                    ['.location-card-map', '位置卡片地图区'],
+                ]
+            },
+            {
+                title: '💬 引用 & 其他',
+                items: [
+                    ['.quote-preview', '引用预览区（输入框上方）'],
+                    ['.quote-preview-name', '引用的发送者名字'],
+                    ['.quote-preview-msg', '引用的消息内容'],
+                    ['.quoted-message', '气泡中的引用消息块'],
+                    ['.quoted-message-name', '引用消息中的名字'],
+                    ['#sticker-suggestion-bar', '智能表情推荐栏'],
+                ]
+            },
+            {
+                title: '📋 微信列表页',
+                items: [
+                    ['.wechat-page', '微信页面容器'],
+                    ['.wechat-header', '微信页面顶栏'],
+                    ['.wechat-tab-bar', '微信底部Tab栏'],
+                    ['.wechat-tab-item', '底部Tab项'],
+                    ['.wechat-list-item', '聊天列表项（会话条目）'],
+                ]
+            },
+            {
+                title: '🏠 桌面',
+                items: [
+                    ['.top-widget', '顶部磨砂小组件'],
+                    ['.dock', '底部Dock栏'],
+                    ['.app-icon', '应用图标'],
+                    ['.app-icon .name', '应用图标文字'],
+                ]
+            },
+        ];
+
+        let html = '<div style="width:90%; max-width:420px; max-height:85vh; background:#fff; border-radius:20px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 10px 40px rgba(0,0,0,0.3);">';
+        html += '<div style="padding:16px 20px; border-bottom:1px solid #eee; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; background:#f8f8f8;">';
+        html += '<div style="font-size:17px; font-weight:600; color:#333;">📋 CSS类名速查</div>';
+        html += '<div onclick="document.getElementById(\'css-class-ref-modal\').style.display=\'none\'" style="width:30px; height:30px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:20px; color:#999; border-radius:50%; background:#f0f0f0;">×</div>';
+        html += '</div>';
+        html += '<div style="flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:16px 20px;">';
+        html += '<div style="font-size:11px; color:#999; margin-bottom:12px; line-height:1.5;">点击类名可复制。在自定义CSS中使用这些类名来修改对应元素的样式。</div>';
+
+        for (const sec of sections) {
+            html += '<div style="margin-bottom:16px;">';
+            html += '<div style="font-size:14px; font-weight:600; color:#333; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid #f0f0f0;">' + sec.title + '</div>';
+            for (const [cls, desc] of sec.items) {
+                html += '<div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:6px; line-height:1.4;">';
+                html += '<code onclick="navigator.clipboard.writeText(\'' + cls + '\');this.style.background=\'#d4edda\';setTimeout(()=>{this.style.background=\'#f0f0f0\'},600)" style="background:#f0f0f0; padding:2px 6px; border-radius:4px; font-size:11px; color:#c7254e; cursor:pointer; flex-shrink:0; white-space:nowrap; transition:background 0.2s; user-select:all; -webkit-user-select:all;">' + cls + '</code>';
+                html += '<span style="font-size:12px; color:#666;">' + desc + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div></div>';
+        modal.innerHTML = html;
+        document.body.appendChild(modal);
     }
 
     // 预览自定义CSS效果（聊天页面）
@@ -47286,12 +47959,46 @@ async function showOfflineMode() {
     renderOfflineChatBody(char);
 }
 
-// 隐藏线下模式
-function hideOfflineMode() {
+/**
+ * @author: jfzhou10
+ * @date: 2026-02-27
+ * @description: 隐藏线下模式，注入模式切换指令到线上历史（线下消息不合并到线上，由triggerAiReply运行时加载）。
+ */
+async function hideOfflineMode() {
     const offlinePage = document.getElementById('offline-chat-window');
     offlinePage.style.display = 'none';
-    
-    offlineModeCharId = null;
+
+    const savedCharId = offlineModeCharId;
+    offlineModeCharId = null; // 先清空，避免重复触发
+
+    if (savedCharId && offlineModeHistory && offlineModeHistory.length > 0) {
+        try {
+            const accountId = getCurrentAccountId();
+            const char = await db.characters.get(savedCharId);
+            if (char && accountId) {
+                // 线下消息不合并到线上主历史，保留在线下存储中
+                // triggerAiReply 运行时会从 IndexedDB 加载线下消息作为 AI 上下文
+
+                // 仅注入模式切换指令到线上历史，告知 AI 已切回线上模式
+                const onlineHistory = getChatHistory(char, accountId);
+                const switchInstruction = {
+                    role: 'system',
+                    content: '[系统指令：线下见面模式已结束，现在回到了线上微信聊天模式。你的回复【必须】严格遵守线上模式的JSON格式（包含reply和thought字段）。请自然地衔接线下发生的事情继续聊天。]',
+                    time: Date.now(),
+                    _isHidden: true, // 不在聊天界面显示
+                    type: 'mode_switch'
+                };
+                onlineHistory.push(switchInstruction);
+                await setChatHistory(char, accountId, onlineHistory);
+                console.log('[hideOfflineMode] ✅ 已注入模式切换指令，线下消息保留在线下存储中');
+            }
+        } catch (e) {
+            console.error('[hideOfflineMode] ❌ 注入模式切换指令失败:', e);
+        }
+    }
+
+    // 清空内存中的线下历史（线下存储保留，供AI上下文使用）
+    offlineModeHistory = [];
 }
 
 // 渲染线下模式聊天内容
@@ -47848,7 +48555,9 @@ ${recentSummary}
     const maxWords = settings.maxWords || 500;
     const customPreset = settings.customPreset || '';
     
-    // 构建系统提示词
+    // 线上聊天记录将在消息数组中以时间线方式合并（不再作为摘要）
+    
+        // 构建系统提示词
     const systemPrompt = `# 角色指令 (System Instruction) - 线下模式
 你现在的身份是【${friendName}】，正在与【${myName}】进行**线下真实见面**。
 ⚠️ 重要：你的名字是${friendName}，你不是${myName}！你是独立的角色，有自己的性格和想法。
@@ -47865,9 +48574,10 @@ ${char.relationships && char.relationships.length > 0 ? `
 3. **关联角色/NPC**：
 ${char.relationships.map(r => `   - ${r.targetName}（${r.relation}）${r.desc ? '：' + r.desc : ''}`).join('\n')}` : ''}
 ${loreContext ? `\n## 📖 世界书设定\n${loreContext}` : ''}
-${summaryMemoryContext}
+${summaryMemoryContext || ''}
 ${groupMemoryContext || ''}
 ${momentsContextText || ''}
+
 ${antiRepeatContext || ''}
 
 ## 🎭 行为准则 (Action Rules)
@@ -47901,25 +48611,29 @@ ${antiRepeatContext || ''}
    **错误示例（不要这样，所有内容堆在一起）：**
    ${friendName}微笑着走到${myName}身边，轻轻拍了拍他的肩膀。"你今天看起来心情不错呢。"她眨了眨眼，眼神中带着一丝调皮。
    
-   **重要：回复中必须包含换行符（\\n），让内容分段显示，不要所有文字堆在一起！**
+   **重要：回复中必须包含换行符（\n），让内容分段显示，不要所有文字堆在一起！**
+9. **【⚠️ 绝对禁止输出前缀标记】**：
+   - 回复中**严禁**出现任何方括号前缀，如 [微信消息]、[线下]、[旁白] 等
+   - 直接输出角色的动作描写和对话内容，不要添加任何元标记
 
-${normalChatHistory.length > 0 ? `## ★ 线上线下统一世界观
-注意：你和对方的互动包含【微信聊天】和【线下见面】两个场景，它们是同一段关系。
-- 带有 [微信消息] 前缀的消息是你们在微信上的聊天
-- 没有前缀的消息是线下见面时的互动
+${normalChatHistory.length > 0 ? `
+## ★ 线上线下统一世界观
+你和对方的互动包含【微信聊天】和【线下见面】两个场景，它们发生在同一段关系中，时间线是连贯的。
+- 对话记录中会出现"（之后你们在微信上聊天）"或"（之后你们线下见面了）"这样的场景切换提示
+- 这些提示仅供你理解上下文，你的回复中绝对不要出现这类提示
 - 你的记忆是完整的，不管是微信聊天还是线下见面的事你都清楚记得
-- 请根据最近的对话内容自然地回复，不要割裂线上线下的关系` : ''}
+- 请根据最近的对话内容自然地回复，不要割裂线上线下的关系
+- 当前场景是【线下见面】，请以线下互动的方式回复` : ''}
 ${customPreset ? `\n## 📌 额外设定\n${customPreset}` : ''}`;
 
     // ★ 线上线下统一时间线：合并微信聊天和线下对话，按时间排序
+    // 🔧 场景切换时在 user 消息中自然嵌入提示，不使用任何前缀标记
     const contextCount = char.context_message_count || 20;
     
-    // 🔧 修复空回复：对线上消息做与 triggerAiReply 相同的清洗处理
+    // 处理线上消息（与 triggerAiReply 相同的清洗逻辑）
     const onlineMsgs = normalChatHistory
         .filter(h => {
-            // 过滤掉系统事件消息（戳一戳、打开APP、改昵称等），它们不是对话内容
             if (h.role === 'system') return false;
-            // 过滤掉视频通话消息
             if (h.isVideoCall) return false;
             return true;
         })
@@ -47927,7 +48641,7 @@ ${customPreset ? `\n## 📌 额外设定\n${customPreset}` : ''}`;
             const role = h.role === 'user' ? 'user' : 'assistant';
             let content = (h.content || '').trim();
             
-            // 转账消息 → 转为可读文字
+            // 转账消息
             if (h.type === 'transfer') {
                 try {
                     const td = JSON.parse(content);
@@ -47936,20 +48650,12 @@ ${customPreset ? `\n## 📌 额外设定\n${customPreset}` : ''}`;
                     content = role === 'user' 
                         ? `对方给你转账了 ¥${td.amount}，备注：${td.desc || '转账'}${sLabel ? '，' + sLabel : ''}`
                         : `你给对方转账了 ¥${td.amount}，备注：${td.desc || '转账'}${sLabel ? '，' + sLabel : ''}`;
-                } catch(e) {
-                    content = '一笔转账';
-                }
+                } catch(e) { content = '一笔转账'; }
             }
-            // 位置分享消息
             else if (h.type === 'location') {
-                try {
-                    const ld = JSON.parse(content);
-                    content = `分享了位置：${ld.name || '某地点'}`;
-                } catch(e) {
-                    content = '分享了一个位置';
-                }
+                try { const ld = JSON.parse(content); content = `分享了位置：${ld.name || '某地点'}`; }
+                catch(e) { content = '分享了一个位置'; }
             }
-            // 特殊卡片消息
             else if (content.startsWith('[couple_avatar_card]')) {
                 content = role === 'assistant' ? '发送了情头邀请' : '回应了情头邀请';
             } else if (content.startsWith('[emei_order]') || content.startsWith('[emei_share]')) {
@@ -47960,71 +48666,101 @@ ${customPreset ? `\n## 📌 额外设定\n${customPreset}` : ''}`;
                 try {
                     const sd = JSON.parse(content);
                     content = sd.isGift ? `送了一个购物礼物：${sd.items}` : `发送了购物订单：${sd.items}`;
-                } catch(e) {
-                    content = '发送了购物卡片';
-                }
+                } catch(e) { content = '发送了购物卡片'; }
             }
-            // 撤回消息
             else if (h.type === 'recall' || content === '((RECALL))') {
                 content = '撤回了一条消息';
             }
             
-            // 图片/语音/表情替换
             content = content
                 .replace(/\[img:[^\]]*\]/g, '[图片]')
                 .replace(/\[imgcard:[^\]]*\]/g, '[图片]')
                 .replace(/\[voice:[^\]]*\]/g, '[语音]')
                 .replace(/\[sticker:[^\]]*\]/g, '[表情]');
             
-            return {
-                role: role,
-                content: content,
-                time: h.time || 0,
-                _isOnline: true
-            };
+            return { role, content, time: h.time || 0, _isOnline: true };
         })
-        .filter(h => h.content && h.content.trim()); // 过滤空内容消息
-        
-    const offlineMsgs = offlineModeHistory.map(h => ({
-        role: h.role === 'user' ? 'user' : 'assistant',
-        content: h.content || '',
-        time: h.time || 0,
-        _isOnline: false
-    })).filter(h => h.content && h.content.trim()); // 过滤空内容消息
+        .filter(h => h.content && h.content.trim());
     
-    // 线上线下合并后按时间排序，统一取最近 contextCount 条（与上下文条数设置一致）
+    const offlineMsgs = offlineModeHistory
+        .filter(h => h.content && h.content.trim())
+        .map(h => ({
+            role: h.role === 'user' ? 'user' : 'assistant',
+            content: h.content,
+            time: h.time || 0,
+            _isOnline: false
+        }));
+    
+    // 合并后按时间排序，取最近 contextCount 条
     const mergedTimeline = [...onlineMsgs, ...offlineMsgs]
         .sort((a, b) => (a.time || 0) - (b.time || 0))
         .slice(-contextCount);
     
-    // 🔧 修复空回复：合并连续同角色消息，避免某些API不支持连续相同role导致返回空
-    const mergedMessages = [];
-    for (const msg of mergedTimeline) {
-        const prefix = msg._isOnline ? '[微信消息] ' : '';
-        const contentWithPrefix = prefix + msg.content;
+    // 🔧 场景切换提示：当 online↔offline 切换时，在第一条 user 消息中嵌入自然过渡
+    // 不使用任何前缀标记，而是把过渡文字合并到 user 消息的开头
+    let lastMode = null; // null | 'online' | 'offline'
+    const timelineWithTransitions = [];
+    
+    for (let i = 0; i < mergedTimeline.length; i++) {
+        const msg = mergedTimeline[i];
+        const currentMode = msg._isOnline ? 'online' : 'offline';
         
+        // 检测场景切换
+        if (lastMode !== null && currentMode !== lastMode) {
+            // 场景变了，找到切换后第一条 user 消息并嵌入过渡提示
+            if (msg.role === 'user') {
+                const transition = currentMode === 'online' 
+                    ? '（之后你们在微信上聊天）\n'
+                    : '（之后你们线下见面了）\n';
+                timelineWithTransitions.push({
+                    role: msg.role,
+                    content: transition + msg.content,
+                    _isOnline: msg._isOnline
+                });
+            } else {
+                // 如果切换后第一条是 assistant，则插入一条过渡 user 消息
+                const transition = currentMode === 'online'
+                    ? '（之后你们切换到微信聊天了）'
+                    : '（之后你们线下又碰面了）';
+                timelineWithTransitions.push({
+                    role: 'user',
+                    content: transition,
+                    _isOnline: msg._isOnline
+                });
+                timelineWithTransitions.push({
+                    role: msg.role,
+                    content: msg.content,
+                    _isOnline: msg._isOnline
+                });
+            }
+        } else {
+            timelineWithTransitions.push({
+                role: msg.role,
+                content: msg.content,
+                _isOnline: msg._isOnline
+            });
+        }
+        lastMode = currentMode;
+    }
+    
+    // 合并连续同角色消息
+    const mergedMessages = [];
+    for (const msg of timelineWithTransitions) {
         const prev = mergedMessages[mergedMessages.length - 1];
         if (prev && prev.role === msg.role) {
-            // 合并连续同角色消息：追加到上一条
-            prev.content += '\n' + contentWithPrefix;
+            prev.content += '\n' + msg.content;
         } else {
-            mergedMessages.push({
-                role: msg.role,
-                content: contentWithPrefix
-            });
+            mergedMessages.push({ role: msg.role, content: msg.content });
         }
     }
     
-    // 构建消息数组（统一时间线）
+    // 构建消息数组
     const messages = [
         { role: 'system', content: systemPrompt },
-        ...mergedMessages.map(h => ({
-            role: h.role,
-            content: h.content
-        }))
+        ...mergedMessages
     ];
     
-    // 🔧 修复空回复：确保最后一条消息是 user，否则API会认为已回复完毕，返回空 choices
+    // 🔧 确保最后一条消息是 user
     if (messages.length > 1) {
         const lastMsg = messages[messages.length - 1];
         if (lastMsg.role === 'assistant') {
@@ -48036,7 +48772,7 @@ ${customPreset ? `\n## 📌 额外设定\n${customPreset}` : ''}`;
         }
     }
     
-    // 🔧 修复空回复：确保至少有一条 user 消息
+    // 🔧 确保至少有一条 user 消息
     const hasUserMsg = messages.some(m => m.role === 'user');
     if (!hasUserMsg) {
         console.warn('[generateOfflineReply] ⚠️ 没有user消息，添加默认消息');
@@ -48046,7 +48782,7 @@ ${customPreset ? `\n## 📌 额外设定\n${customPreset}` : ''}`;
         });
     }
     
-    console.log('[generateOfflineReply] 📤 发送消息数:', messages.length, '条');
+        console.log('[generateOfflineReply] 📤 发送消息数:', messages.length, '条');
     console.log('[generateOfflineReply] 消息角色序列:', messages.map(m => m.role).join(' → '));
 
     const reply = await callAI(messages);
@@ -48185,6 +48921,139 @@ function applyOfflineBubbleCSS() {
         document.head.appendChild(styleEl);
     }
     styleEl.textContent = cssCode;
+}
+
+
+// ===== 线下模式预设管理 =====
+// localStorage key: offline_presets_preset / offline_presets_bubblecss
+
+/**
+ * 获取指定类型的所有预设列表
+ * @param {string} type - 'preset' 或 'bubblecss'
+ */
+function getOfflinePresets(type) {
+    const key = 'offline_presets_' + type;
+    try {
+        const data = localStorage.getItem(key);
+        return data ? JSON.parse(data) : [];
+    } catch (e) { return []; }
+}
+
+/**
+ * 保存预设列表到 localStorage
+ */
+function setOfflinePresets(type, list) {
+    const key = 'offline_presets_' + type;
+    localStorage.setItem(key, JSON.stringify(list));
+}
+
+/**
+ * 将当前输入框的内容保存为预设
+ */
+function saveOfflinePresetAs(type) {
+    const textareaId = type === 'preset' ? 'offline-custom-preset' : 'offline-custom-bubble-css';
+    const content = document.getElementById(textareaId)?.value?.trim();
+    if (!content) {
+        showToast('内容为空，无法保存');
+        return;
+    }
+
+    const name = prompt('请为预设命名：');
+    if (!name || !name.trim()) return;
+
+    const presets = getOfflinePresets(type);
+    presets.push({
+        name: name.trim(),
+        content: content,
+        time: Date.now()
+    });
+    setOfflinePresets(type, presets);
+    showToast('预设已保存：' + name.trim());
+}
+
+/**
+ * 显示预设列表弹窗
+ */
+function showOfflinePresetList(type) {
+    const presets = getOfflinePresets(type);
+    const typeName = type === 'preset' ? '自定义预设' : '气泡CSS预设';
+
+    // 移除旧弹窗
+    let old = document.getElementById('offline-preset-modal');
+    if (old) old.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'offline-preset-modal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:10002; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+
+    let html = '<div style="width:90%; max-width:400px; max-height:80vh; background:#fff; border-radius:20px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 10px 40px rgba(0,0,0,0.3);">';
+    html += '<div style="padding:16px 20px; border-bottom:1px solid #eee; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; background:#f8f8f8;">';
+    html += '<div style="font-size:17px; font-weight:600; color:#333;">📂 ' + typeName + '</div>';
+    html += '<div onclick="document.getElementById(\'offline-preset-modal\').remove()" style="width:30px; height:30px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:20px; color:#999; border-radius:50%; background:#f0f0f0;">×</div>';
+    html += '</div>';
+    html += '<div style="flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:12px 16px;">';
+
+    if (presets.length === 0) {
+        html += '<div style="text-align:center; padding:40px 0; color:#999; font-size:14px;">暂无保存的预设<br><span style="font-size:12px; color:#ccc;">在输入框填写内容后点击「保存为预设」</span></div>';
+    } else {
+        for (let i = 0; i < presets.length; i++) {
+            const p = presets[i];
+            const timeStr = new Date(p.time).toLocaleDateString('zh-CN') + ' ' + new Date(p.time).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+            const preview = p.content.length > 60 ? p.content.substring(0, 60) + '...' : p.content;
+            html += '<div style="background:#fafafa; border:1px solid #eee; border-radius:12px; padding:12px 14px; margin-bottom:10px;">';
+            html += '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">';
+            html += '<div style="font-size:14px; font-weight:600; color:#333; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + p.name.replace(/</g, '&lt;') + '</div>';
+            html += '<div style="font-size:11px; color:#bbb; flex-shrink:0; margin-left:8px;">' + timeStr + '</div>';
+            html += '</div>';
+            html += '<div style="font-size:12px; color:#888; line-height:1.4; margin-bottom:10px; word-break:break-all; white-space:pre-wrap; max-height:60px; overflow:hidden;">' + preview.replace(/</g, '&lt;') + '</div>';
+            html += '<div style="display:flex; gap:8px;">';
+            html += '<button onclick="loadOfflinePreset(\'' + type + '\',' + i + ')" style="flex:1; padding:7px; background:#e8f5e9; color:#43a047; border:none; border-radius:8px; font-size:12px; cursor:pointer; font-weight:500;">✓ 应用</button>';
+            html += '<button onclick="deleteOfflinePreset(\'' + type + '\',' + i + ')" style="padding:7px 12px; background:#fff0f0; color:#e57373; border:none; border-radius:8px; font-size:12px; cursor:pointer; font-weight:500;">删除</button>';
+            html += '</div>';
+            html += '</div>';
+        }
+    }
+
+    html += '</div></div>';
+    modal.innerHTML = html;
+    document.body.appendChild(modal);
+}
+
+/**
+ * 加载指定预设到输入框
+ */
+function loadOfflinePreset(type, index) {
+    const presets = getOfflinePresets(type);
+    const p = presets[index];
+    if (!p) return;
+
+    const textareaId = type === 'preset' ? 'offline-custom-preset' : 'offline-custom-bubble-css';
+    document.getElementById(textareaId).value = p.content;
+
+    // 关闭弹窗
+    const modal = document.getElementById('offline-preset-modal');
+    if (modal) modal.remove();
+
+    showToast('已加载预设：' + p.name);
+}
+
+/**
+ * 删除指定预设
+ */
+function deleteOfflinePreset(type, index) {
+    const presets = getOfflinePresets(type);
+    const p = presets[index];
+    if (!p) return;
+
+    if (!confirm('确定删除预设「' + p.name + '」吗？')) return;
+
+    presets.splice(index, 1);
+    setOfflinePresets(type, presets);
+
+    // 刷新弹窗
+    showOfflinePresetList(type);
+    showToast('已删除预设');
 }
 
 function clearOfflineChatHistory() {
@@ -58655,7 +59524,8 @@ ${rolePersona}
 - 内容要有细节和画面感，比如具体吃了什么、看到了什么、和谁说了什么话
 - 可以有前后跳跃、想到哪写到哪的感觉，不需要严格的逻辑结构
 - 可以夹杂一些内心独白、自问自答
-- 字数在800-2000字左右，不要太短也不要刻意凑字数`;
+- 字数在800-2000字左右，不要太短也不要刻意凑字数
+- 【重要】不要在日记正文开头或任何位置写日期、时间、标题（如"2025年1月1日"、"周一"、"Day X"等），系统会自动添加日期，你只需要写日记内容本身`;
 
         // 构建 user prompt
         let userPromptParts = [];

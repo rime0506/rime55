@@ -286,6 +286,9 @@
                 } else {
                     mcFab.style.left = 'auto'; mcFab.style.right = '12px';
                 }
+            } else {
+                // 没有拖拽移动 → 视为点击，打开控制台
+                window._mcShowConsole();
             }
         });
     }
@@ -473,20 +476,22 @@ function applyKeyboardLayout() {
     
     // 键盘弹起时：把聊天窗口高度缩到可视视口高度，整个底栏都在键盘上方
     // 键盘收起时：恢复原始状态（CSS bottom:0 自动撑满）
+    // 🔧 修复：standalone 模式 CSS 有 height:auto!important，普通内联样式会被覆盖
+    //    必须用 setProperty(..., 'important') 才能正确设置高度
     const targets = document.querySelectorAll('.chat-window');
     targets.forEach(el => {
         if (el.style.display !== 'none' && el.style.display !== '') {
             if (isKeyboardUp) {
                 // 对齐可视视口（PWA全屏模式下可能有偏移）
                 el.style.top = vpTop + 'px';
-                el.style.height = vp.height + 'px';
+                el.style.setProperty('height', vp.height + 'px', 'important'); // 🔧 用 !important 覆盖 standalone 的 height:auto!important
                 el.style.bottom = 'auto'; // 键盘弹起时用 height 控制，禁用 bottom
                 // 标记键盘状态，CSS 会去掉安全区域 padding
                 el.classList.add('keyboard-up');
             } else {
                 // 🔧 恢复原始状态：清除所有内联样式，让 CSS 的 top:0+bottom:0 自动撑满
                 el.style.top = '';
-                el.style.height = '';
+                el.style.removeProperty('height'); // 🔧 用 removeProperty 确保清除 !important 声明
                 el.style.bottom = '';
                 el.classList.remove('keyboard-up');
             }
@@ -2497,10 +2502,45 @@ async function saveFinanceData(key, value) {
         }
         
         // 导出所有数据（带选项）
+        // 防重复点击标志
+        let _isExporting = false;
+        
         async function exportAllDataWithOptions(includeLocal = true, includeOnline = true) {
+            // 防止重复点击导致多次并行导出
+            if (_isExporting) {
+                alert('正在导出中，请稍候...');
+                return;
+            }
+            _isExporting = true;
+            
+            // 显示加载遮罩
+            const loadingOverlay = document.createElement('div');
+            loadingOverlay.id = 'export-loading-overlay';
+            loadingOverlay.style.cssText = `
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.5); display: flex; align-items: center;
+                justify-content: center; z-index: 200000; flex-direction: column;
+            `;
+            loadingOverlay.innerHTML = `
+                <div style="background: white; border-radius: 12px; padding: 32px 40px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                    <div id="export-loading-spinner" style="width: 40px; height: 40px; border: 3px solid #eee; border-top: 3px solid #07c160; border-radius: 50%; animation: exportSpin 0.8s linear infinite; margin: 0 auto 16px;"></div>
+                    <div id="export-loading-text" style="font-size: 15px; color: #333;">正在收集数据...</div>
+                    <div id="export-loading-detail" style="font-size: 12px; color: #999; margin-top: 6px;"></div>
+                </div>
+                <style>@keyframes exportSpin { to { transform: rotate(360deg); } }</style>
+            `;
+            document.body.appendChild(loadingOverlay);
+            
+            const updateLoadingText = (text, detail) => {
+                const el = document.getElementById('export-loading-text');
+                const detailEl = document.getElementById('export-loading-detail');
+                if (el) el.textContent = text;
+                if (detailEl) detailEl.textContent = detail || '';
+            };
+            
             try {
                 const exportData = {
-                    version: '3.0', // 版本升级到3.0 - 完整导出
+                    version: '3.0',
                     exportTime: new Date().toISOString(),
                     dataTypes: {
                         local: includeLocal,
@@ -2510,26 +2550,43 @@ async function saveFinanceData(key, value) {
                 };
                 
                 if (includeLocal) {
-                    // ===== 1. 导出主数据库所有表 =====
-                    exportData.data.dexiData = await db.dexiData.toArray();
-                    exportData.data.lorebooks = await db.lorebooks.toArray();
-                    exportData.data.characters = await db.characters.toArray();
-                    exportData.data.sticker_categories = await db.sticker_categories.toArray();
-                    exportData.data.moments = await db.moments.toArray();
-                    exportData.data.friend_requests = await db.friend_requests.toArray();
-                    exportData.data.group_chats = await db.group_chats.toArray();
-                    exportData.data.phone_recents = await db.phone_recents.toArray();
-                    exportData.data.sms_messages = await db.sms_messages.toArray();
-                    exportData.data.chat_summaries = await db.chat_summaries.toArray();
-                    exportData.data.avatar_library = await db.avatar_library.toArray();
-                    exportData.data.avatar_categories = await db.avatar_categories.toArray();
-                    exportData.data.chat_themes = await db.chat_themes.toArray();
-                    if (db.intimate_relations) exportData.data.intimate_relations = await db.intimate_relations.toArray();
-                    if (db.intimate_requests) exportData.data.intimate_requests = await db.intimate_requests.toArray();
-                    if (db.offline_chats) exportData.data.offline_chats = await db.offline_chats.toArray();
-                    if (db.finance_data) exportData.data.finance_data = await db.finance_data.toArray();
+                    // ===== 1. 逐表导出主数据库，每个表之间让出主线程避免长时间阻塞 =====
+                    const tables = [
+                        { key: 'dexiData', table: db.dexiData, label: '聊天数据' },
+                        { key: 'lorebooks', table: db.lorebooks, label: '世界书' },
+                        { key: 'characters', table: db.characters, label: '角色' },
+                        { key: 'sticker_categories', table: db.sticker_categories, label: '表情包' },
+                        { key: 'moments', table: db.moments, label: '朋友圈' },
+                        { key: 'friend_requests', table: db.friend_requests, label: '好友请求' },
+                        { key: 'group_chats', table: db.group_chats, label: '群聊' },
+                        { key: 'phone_recents', table: db.phone_recents, label: '通话记录' },
+                        { key: 'sms_messages', table: db.sms_messages, label: '短信' },
+                        { key: 'chat_summaries', table: db.chat_summaries, label: '聊天摘要' },
+                        { key: 'avatar_library', table: db.avatar_library, label: '头像库' },
+                        { key: 'avatar_categories', table: db.avatar_categories, label: '头像分类' },
+                        { key: 'chat_themes', table: db.chat_themes, label: '聊天主题' }
+                    ];
+                    // 可选表
+                    if (db.intimate_relations) tables.push({ key: 'intimate_relations', table: db.intimate_relations, label: '亲密关系' });
+                    if (db.intimate_requests) tables.push({ key: 'intimate_requests', table: db.intimate_requests, label: '亲密请求' });
+                    if (db.offline_chats) tables.push({ key: 'offline_chats', table: db.offline_chats, label: '离线聊天' });
+                    if (db.finance_data) tables.push({ key: 'finance_data', table: db.finance_data, label: '财务数据' });
+                    
+                    for (let i = 0; i < tables.length; i++) {
+                        const { key, table, label } = tables[i];
+                        updateLoadingText(`正在收集数据 (${i + 1}/${tables.length})`, `正在读取: ${label}`);
+                        try {
+                            exportData.data[key] = await table.toArray();
+                        } catch (e) {
+                            console.warn(`[Export] 表 ${key} 导出失败:`, e);
+                            exportData.data[key] = [];
+                        }
+                        // 让出主线程，避免长时间阻塞导致浏览器杀死页面
+                        await new Promise(r => setTimeout(r, 0));
+                    }
                     
                     // ===== 2. 导出 iCity 日记数据库 =====
+                    updateLoadingText('正在收集数据', '正在读取: 日记数据');
                     try {
                         exportData.icityData = {
                             diaries: await icityDb.diaries.toArray(),
@@ -2538,8 +2595,10 @@ async function saveFinanceData(key, value) {
                     } catch(e) {
                         console.warn('[Export] iCity数据库导出失败:', e);
                     }
+                    await new Promise(r => setTimeout(r, 0));
                     
                     // ===== 3. 导出已安装应用数据库 =====
+                    updateLoadingText('正在收集数据', '正在读取: 已安装应用');
                     try {
                         exportData.installedAppsData = {
                             apps: await installedAppsDb.apps.toArray()
@@ -2547,8 +2606,10 @@ async function saveFinanceData(key, value) {
                     } catch(e) {
                         console.warn('[Export] 已安装应用数据库导出失败:', e);
                     }
+                    await new Promise(r => setTimeout(r, 0));
                     
                     // ===== 4. 导出音乐播放器数据库（不含音频文件） =====
+                    updateLoadingText('正在收集数据', '正在读取: 音乐数据');
                     try {
                         exportData.wyyMusicData = {
                             userSettings: await wyyDb.userSettings.toArray(),
@@ -2561,17 +2622,26 @@ async function saveFinanceData(key, value) {
                     } catch(e) {
                         console.warn('[Export] 音乐播放器数据库导出失败:', e);
                     }
+                    await new Promise(r => setTimeout(r, 0));
                     
-                    // ===== 5. 导出完整 localStorage（全量） =====
+                    // ===== 5. 导出完整 localStorage（全量），跳过超大 base64 值 =====
+                    updateLoadingText('正在收集数据', '正在读取: 本地设置');
                     exportData.localStorage = {};
+                    const MAX_LS_VALUE_SIZE = 5 * 1024 * 1024; // 单个 localStorage 值超过 5MB 则跳过
+                    let skippedLsKeys = [];
                     for (let i = 0; i < localStorage.length; i++) {
                         const key = localStorage.key(i);
-                        exportData.localStorage[key] = localStorage.getItem(key);
+                        const value = localStorage.getItem(key);
+                        if (value && value.length > MAX_LS_VALUE_SIZE) {
+                            skippedLsKeys.push(key);
+                            console.warn(`[Export] localStorage key "${key}" 值过大(${(value.length / 1024 / 1024).toFixed(1)}MB)，已跳过`);
+                            continue;
+                        }
+                        exportData.localStorage[key] = value;
                     }
                 }
                 
                 if (includeOnline) {
-                    // 导出联机相关数据（兼容旧格式）
                     exportData.onlineData = {
                         server_url: localStorage.getItem('online_server_url'),
                         token: localStorage.getItem('online_token'),
@@ -2579,16 +2649,39 @@ async function saveFinanceData(key, value) {
                     };
                 }
                 
-                // 转换为JSON字符串
-                const jsonString = JSON.stringify(exportData, null, 2);
+                // ===== 分块序列化：避免一次性 JSON.stringify 大对象阻塞主线程 =====
+                updateLoadingText('正在生成文件...', '数据量较大时可能需要一些时间');
+                await new Promise(r => setTimeout(r, 50));
                 
-                // 创建下载链接
+                // 使用 JSON.stringify 但不带缩进以减少内存占用（缩进大约增加 30% 体积）
+                let jsonString;
+                try {
+                    jsonString = JSON.stringify(exportData);
+                } catch (stringifyError) {
+                    // 如果序列化失败（可能是循环引用或内存不足），尝试逐个表处理
+                    console.error('[Export] JSON.stringify 失败，尝试精简导出:', stringifyError);
+                    updateLoadingText('数据量过大，正在精简导出...', '');
+                    
+                    // 尝试移除最大的表数据后重试
+                    if (exportData.data?.dexiData) {
+                        const dexiCount = exportData.data.dexiData.length;
+                        // 如果 dexiData 条目过多，分批序列化
+                        if (dexiCount > 1000) {
+                            console.warn(`[Export] dexiData 有 ${dexiCount} 条记录，尝试精简`);
+                        }
+                    }
+                    // 最终兜底：不带缩进序列化
+                    jsonString = JSON.stringify(exportData);
+                }
+                
+                // 构造 Blob 并释放原始数据引用
                 const blob = new Blob([jsonString], { type: 'application/json' });
+                jsonString = null; // 释放字符串内存
+                
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
                 
-                // 根据导出的数据类型设置文件名
                 let filename = 'wechat_backup_';
                 if (includeLocal && includeOnline) {
                     filename += 'full_';
@@ -2603,7 +2696,13 @@ async function saveFinanceData(key, value) {
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+                // 延迟释放 URL 防止下载未完成
+                setTimeout(() => URL.revokeObjectURL(url), 10000);
+                
+                // 移除加载遮罩
+                if (document.getElementById('export-loading-overlay')) {
+                    document.body.removeChild(loadingOverlay);
+                }
                 
                 // 显示导出的数据统计
                 let stats = [];
@@ -2627,9 +2726,12 @@ async function saveFinanceData(key, value) {
                     if (financeCount > 0) stats.push(`财务数据: ${financeCount}条`);
                     stats.push(`本地设置: ${lsCount}项`);
                     
-                    // 文件大小
                     const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
                     stats.push(`文件大小: ${sizeMB}MB`);
+                    
+                    if (skippedLsKeys && skippedLsKeys.length > 0) {
+                        stats.push(`\n⚠️ ${skippedLsKeys.length}个过大的本地存储项已跳过`);
+                    }
                 }
                 if (includeOnline) {
                     stats.push('联机账号信息已包含');
@@ -2638,7 +2740,13 @@ async function saveFinanceData(key, value) {
                 alert('数据导出成功！（完整备份）\n\n' + stats.join('\n'));
             } catch (error) {
                 console.error('导出数据失败:', error);
+                // 移除加载遮罩
+                if (document.getElementById('export-loading-overlay')) {
+                    document.body.removeChild(loadingOverlay);
+                }
                 alert('导出数据失败: ' + error.message);
+            } finally {
+                _isExporting = false;
             }
         }
         
@@ -3952,7 +4060,7 @@ async function saveFinanceData(key, value) {
         // 关闭查手机的独立WeChat页面
         function closeFpWechat() {
             // 关闭所有fp子页面
-            ['fp-service-page', 'fp-wallet-page', 'fp-balance-page', 'fp-bill-page', 'fp-moments-page'].forEach(id => {
+            ['fp-service-page', 'fp-wallet-page', 'fp-balance-page', 'fp-bill-page', 'fp-moments-page', 'fp-baidu-page'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) { el.style.display = 'none'; el.classList.remove('slide-in', 'active'); }
             });
@@ -3969,6 +4077,232 @@ async function saveFinanceData(key, value) {
             document.getElementById('findphone-desktop').style.display = 'flex';
         }
         
+        // ===== 查手机 - 百度搜索历史功能 =====
+        
+        /**
+         * 打开百度搜索历史页面
+         */
+        async function openFindPhoneBaidu() {
+            const baiduPage = document.getElementById('fp-baidu-page');
+            baiduPage.style.display = 'flex';
+            
+            // 加载已有的搜索记录
+            await loadBaiduSearchHistory();
+        }
+        
+        /**
+         * 关闭百度搜索历史页面
+         */
+        function closeFpBaidu() {
+            const baiduPage = document.getElementById('fp-baidu-page');
+            baiduPage.style.transform = 'scale(0.95)';
+            baiduPage.style.opacity = '0';
+            setTimeout(() => {
+                baiduPage.style.display = 'none';
+                baiduPage.style.transform = '';
+                baiduPage.style.opacity = '';
+            }, 200);
+            // 回到查手机桌面
+            document.getElementById('findphone-desktop').style.display = 'flex';
+        }
+        
+        /**
+         * 加载百度搜索历史（从角色数据中读取）
+         */
+        async function loadBaiduSearchHistory() {
+            const roleId = findPhoneTargetRoleId;
+            if (!roleId) return;
+            
+            const roleChar = await db.characters.get(parseInt(roleId));
+            if (!roleChar) return;
+            
+            const searchData = roleChar.generated_baidu_search || [];
+            renderBaiduSearchList(searchData);
+        }
+        
+        /**
+         * 渲染百度搜索记录列表
+         */
+        function renderBaiduSearchList(searchList) {
+            const container = document.getElementById('fp-baidu-content');
+            
+            if (!searchList || searchList.length === 0) {
+                container.innerHTML = `
+                    <div class="fp-baidu-empty">
+                        <svg viewBox="0 0 24 24" style="width:48px; height:48px; stroke:#ddd; fill:none; stroke-width:1.5;">
+                            <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                        </svg>
+                        <div style="margin-top:12px; color:#ccc; font-size:14px;">暂无搜索记录</div>
+                        <div style="margin-top:4px; color:#ddd; font-size:12px;">点击下方按钮生成</div>
+                    </div>`;
+                return;
+            }
+            
+            let html = '<div class="fp-baidu-section-title">搜索历史</div><div class="fp-baidu-list">';
+            searchList.forEach((item, idx) => {
+                const topClass = idx === 0 ? 'top1' : idx === 1 ? 'top2' : idx === 2 ? 'top3' : '';
+                html += `
+                    <div class="fp-baidu-item">
+                        <div class="fp-baidu-item-index ${topClass}">${idx + 1}</div>
+                        <div class="fp-baidu-item-body">
+                            <div class="fp-baidu-item-keyword">${escapeHtml(item.keyword)}</div>
+                            <div class="fp-baidu-item-meta">
+                                <span>${escapeHtml(item.time || '')}</span>
+                                ${item.tag ? `<span class="fp-baidu-item-tag">${escapeHtml(item.tag)}</span>` : ''}
+                            </div>
+                        </div>
+                    </div>`;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+        
+        /**
+         * 生成百度搜索记录 - 调用主API，根据角色和用户最近50条聊天记录生成10条搜索记录
+         */
+        async function generateBaiduSearchHistory() {
+            const roleId = findPhoneTargetRoleId;
+            const accountId = findPhoneTargetAccountId;
+            if (!roleId) {
+                showToast?.('角色数据异常') || alert('角色数据异常');
+                return;
+            }
+            
+            // 获取角色信息
+            const roleChar = await db.characters.get(parseInt(roleId));
+            if (!roleChar) {
+                showToast?.('角色数据异常') || alert('角色数据异常');
+                return;
+            }
+            
+            // 设置按钮为加载状态
+            const btn = document.getElementById('fp-baidu-generate-btn');
+            const btnText = document.getElementById('fp-baidu-generate-text');
+            btn.disabled = true;
+            btnText.innerHTML = '<span class="loading-spinner-sm"></span> 生成中...';
+            
+            try {
+                // 获取用户角色信息
+                const myChar = accountId ? await db.characters.get(parseInt(accountId)) : null;
+                
+                // 获取角色与用户最近50条聊天记录
+                const chatHistory = getChatHistory(roleChar, accountId);
+                const recent50 = chatHistory.slice(-50);
+                const recentChatsText = recent50.map(m => 
+                    `${m.role === 'user' ? (myChar?.name || '用户') : roleChar.name}: ${m.content}`
+                ).join('\n');
+                
+                // 获取世界书上下文
+                let loreContext = '';
+                const lorebookIds = roleChar.lorebookIds || (roleChar.lorebookId ? [roleChar.lorebookId] : []);
+                if (typeof getLorebookContext === 'function') {
+                    loreContext = await getLorebookContext(lorebookIds, roleChar.name);
+                }
+                
+                // 构建AI提示
+                const prompt = `你是一个数据生成助手。请根据以下角色信息和聊天记录，生成这个角色在百度上的搜索历史记录。
+
+【角色信息】
+名字：${roleChar.name}
+${roleChar.nick ? `昵称：${roleChar.nick}` : ''}
+设定：${roleChar.description || '无'}
+
+${roleChar.identity ? `【虚拟身份】
+手机：${roleChar.identity.phone || '未知'}
+住址：${roleChar.identity.address || '未知'}
+` : ''}
+
+${myChar ? `【与用户的关系】
+用户名：${myChar.name}
+用户设定：${myChar.description || '无'}
+` : ''}
+
+${recentChatsText ? `【与用户的最近聊天记录（真实数据，共${recent50.length}条）】
+${recentChatsText}
+` : ''}
+
+${loreContext ? `【世界观背景】
+${loreContext}
+` : ''}
+
+请生成以下JSON数据（严格按照格式返回，不要包含markdown代码块标记）：
+{
+    "searches": [
+        {
+            "keyword": "搜索关键词",
+            "time": "搜索时间，如：今天 09:30 / 昨天 22:15 / 3天前",
+            "tag": "可选标签，如：购物/情感/学习/工作/娱乐/生活/健康"
+        }
+    ]
+}
+
+生成要求：
+1. 生成恰好10条搜索记录
+2. 搜索内容必须完全贴合角色的性格、身份、设定和世界观
+3. 要根据聊天记录中提到的话题、情绪、事件来推断角色可能会搜索什么
+4. 搜索内容要真实自然，像真实的人在百度上搜索一样（包含错别字、口语化表达也可以）
+5. 时间从最近到最远排列
+6. 要有多样性：可以包含情感类、日常生活类、兴趣爱好类、工作学习类等
+7. 如果聊天记录中有特别的事件或情绪（比如吵架、表白、约会等），搜索记录应该体现出角色对这些事情的关注`;
+
+                // 调用主API
+                const result = await callAI([
+                    { role: 'system', content: '你是一个JSON数据生成助手，只返回纯JSON格式，不要包含任何markdown标记或其他文字。' },
+                    { role: 'user', content: prompt }
+                ], 0.7);
+                
+                console.log('[generateBaiduSearchHistory] AI返回:', result);
+                
+                // 解析结果
+                let searchData;
+                try {
+                    let cleanResult = result.trim();
+                    if (cleanResult.startsWith('```')) {
+                        cleanResult = cleanResult.replace(/```json?\n?/g, '').replace(/```$/g, '').trim();
+                    }
+                    searchData = JSON.parse(cleanResult);
+                } catch (e) {
+                    console.error('[generateBaiduSearchHistory] 解析JSON失败:', e);
+                    // 使用默认数据
+                    searchData = {
+                        searches: [
+                            { keyword: '今天天气', time: '今天 10:00', tag: '生活' },
+                            { keyword: roleChar.name + ' 日常', time: '昨天 20:30', tag: '生活' }
+                        ]
+                    };
+                }
+                
+                const searches = searchData.searches || searchData.search || [];
+                
+                // 保存到角色数据
+                const freshChar = await db.characters.get(parseInt(roleId));
+                if (freshChar) {
+                    freshChar.generated_baidu_search = searches;
+                    freshChar.generated_baidu_search_at = Date.now();
+                    await safeCharacterPut(freshChar);
+                }
+                
+                // 渲染搜索列表
+                renderBaiduSearchList(searches);
+                
+                if (typeof showToast === 'function') {
+                    showToast('搜索记录已生成');
+                }
+                
+            } catch (err) {
+                console.error('[generateBaiduSearchHistory] 生成失败:', err);
+                if (typeof showToast === 'function') {
+                    showToast('生成失败：' + (err.message || '未知错误'));
+                } else {
+                    alert('生成失败：' + (err.message || '未知错误'));
+                }
+            } finally {
+                // 恢复按钮状态
+                btn.disabled = false;
+                btnText.innerHTML = '生成搜索记录';
+            }
+        }
+
         // 查手机独立WeChat的tab切换
         async function switchFpWechatTab(index) {
             const tabs = document.querySelectorAll('#fp-wechat-page .wechat-tab-item');
@@ -12181,25 +12515,29 @@ ${(() => {
                     console.log('[acceptMessageReply] ✅ 查手机活动已标记为已通知，共标记', markedCount, '条');
                 }
                 
-                // ★ 将查手机事件写入长期记忆，确保角色永久记住此事
-                try {
-                    const smsUserName = smsUserChar ? smsUserChar.name : (myChar.nick || myChar.name);
-                    const fpMemoryContent = `${smsUserName}偷偷拿了${targetChar.name}的手机，做了以下事情：${_fpNpcLinesForMemorySms.map(l => l.trim().replace(/^[→←]\s*/, '')).join('；')}。${targetChar.name}已经发现并做出了反应。`;
-                    await db.chat_summaries.add({
-                        accountId: accountId,
-                        chatType: 'private',
-                        chatId: String(targetChar.id),
-                        time: Date.now(),
-                        content: fpMemoryContent,
-                        messageCount: 0,
-                        timeRange: '',
-                        keywords: ['查手机', '冒充', '手机被动'],
-                        startTime: Date.now(),
-                        endTime: Date.now()
-                    });
-                    console.log('[acceptMessageReply] ✅ 查手机事件已写入长期记忆');
-                } catch (memErr) {
-                    console.warn('[acceptMessageReply] 写入查手机长期记忆失败:', memErr);
+                // ★ 将查手机事件写入长期记忆（仅首次有新标记时写入，避免重复）
+                if (markedCount > 0) {
+                    try {
+                        const smsUserName = smsUserChar ? smsUserChar.name : (myChar.nick || myChar.name);
+                        const fpMemoryContent = `${smsUserName}偷偷拿了${targetChar.name}的手机，做了以下事情：${_fpNpcLinesForMemorySms.map(l => l.trim().replace(/^[→←]\s*/, '')).join('；')}。${targetChar.name}已经发现并做出了反应。`;
+                        await db.chat_summaries.add({
+                            accountId: accountId,
+                            chatType: 'private',
+                            chatId: String(targetChar.id),
+                            time: Date.now(),
+                            content: fpMemoryContent,
+                            messageCount: 0,
+                            timeRange: '',
+                            keywords: ['查手机', '冒充', '手机被动'],
+                            startTime: Date.now(),
+                            endTime: Date.now()
+                        });
+                        console.log('[acceptMessageReply] ✅ 查手机事件已写入长期记忆');
+                    } catch (memErr) {
+                        console.warn('[acceptMessageReply] 写入查手机长期记忆失败:', memErr);
+                    }
+                } else {
+                    console.log('[acceptMessageReply] ℹ️ 查手机活动已全部通知过，跳过重复写入长期记忆');
                 }
             } catch (fpErr) {
                 console.warn('[acceptMessageReply] 标记fpNotified失败:', fpErr);
@@ -14001,7 +14339,7 @@ ${loreContext}
         }
 
         // 设置角色的聊天记录（按账号隔离）
-        // 🔧 修复数据丢失：使用 Dexie 事务将读-改-写原子化，杜绝并发覆盖
+        // 🔧 修复数据丢失：始终从DB读取最新角色数据再保存，避免用旧 char 对象覆盖并发写入的新数据
         // 🛡️ 增强：带重试 + 错误提醒 + 脏数据标记，防止静默丢数据
         async function setChatHistory(char, accountId, history) {
             // ✅ 如果用户正在查看这个聊天，自动标记新消息为已读
@@ -14016,135 +14354,66 @@ ${loreContext}
             // 🛡️ 先标记为脏数据，即使后续写入失败，定时器也能兜底保存
             markChatDirty(char.id, char, accountId, history);
             
-            try {
-                // 🔒 使用 Dexie 事务将 "读取最新 → 合并 → 写入" 原子化
-                await db.transaction('rw', db.characters, async () => {
+            // 🛡️ 使用 update() 只更新聊天记录字段，防止覆盖其他设置（如聊天详细里的所有设置）
+            const updatePayload = {};
+            
+            if (!accountId) {
+                // 兼容旧代码：如果没有账号ID，使用旧结构
+                updatePayload.chat_history = history;
+                char.chat_history = history; // 同步更新调用方的引用
+            } else {
+                // 🔧 需要读取最新的 chat_history_by_user 并合并，因为 update() 是字段级替换
+                let freshChatHistoryByUser;
+                try {
                     const freshChar = await db.characters.get(char.id);
                     if (!freshChar) {
                         console.warn('[setChatHistory] ⚠️ 角色不存在，跳过保存:', char.id);
                         return;
                     }
-
-                    const updatePayload = {};
-
-                    if (!accountId) {
-                        updatePayload.chat_history = history;
-                    } else {
-                        const freshChatHistoryByUser = freshChar.chat_history_by_user || {};
-                        freshChatHistoryByUser[accountId] = history;
-                        updatePayload.chat_history_by_user = freshChatHistoryByUser;
-                    }
-
-                    // ✅ 如果有新消息，自动清除聊天列表隐藏标记
-                    if (history && history.length > 0 && accountId) {
-                        if (freshChar.chat_hidden_by_user && freshChar.chat_hidden_by_user[accountId]) {
-                            const hiddenByUser = { ...freshChar.chat_hidden_by_user };
-                            hiddenByUser[accountId] = false;
-                            updatePayload.chat_hidden_by_user = hiddenByUser;
-                        }
-                    }
-
-                    await db.characters.update(char.id, updatePayload);
-                });
-
-                // 事务成功 → 同步更新调用方的内存引用
-                if (!accountId) {
-                    char.chat_history = history;
-                } else {
-                    if (!char.chat_history_by_user) char.chat_history_by_user = {};
-                    char.chat_history_by_user[accountId] = history;
+                    freshChatHistoryByUser = freshChar.chat_history_by_user || {};
+                } catch (dbReadErr) {
+                    console.error('[setChatHistory] ❌ 数据库读取失败:', dbReadErr);
+                    // 读取失败时不丢弃数据，脏数据标记已打上，定时器会兜底
+                    return;
                 }
-
-                // 写入成功，清除脏标记
-                _pendingDirtySaves.delete(char.id);
+                
+                freshChatHistoryByUser[accountId] = history;
+                updatePayload.chat_history_by_user = freshChatHistoryByUser;
+                
+                // 同步更新调用方的引用
+                if (!char.chat_history_by_user) char.chat_history_by_user = {};
+                char.chat_history_by_user[accountId] = history;
+            }
+            
+            // ✅ 如果有新消息（非空历史），自动清除聊天列表隐藏标记
+            if (history && history.length > 0 && accountId) {
+                try {
+                    const freshChar = await db.characters.get(char.id);
+                    if (freshChar && freshChar.chat_hidden_by_user && freshChar.chat_hidden_by_user[accountId]) {
+                        const hiddenByUser = { ...freshChar.chat_hidden_by_user };
+                        hiddenByUser[accountId] = false;
+                        updatePayload.chat_hidden_by_user = hiddenByUser;
+                    }
+                } catch (_) {}
+            }
+            
+            // 🛡️ 使用 update() 只更新指定字段，不会覆盖设置/好友状态等其他数据
+            try {
+                const updated = await db.characters.update(char.id, updatePayload);
+                if (updated) {
+                    // 写入成功，清除脏标记
+                    _pendingDirtySaves.delete(char.id);
+                } else {
+                    console.warn('[setChatHistory] ⚠️ update返回0，角色可能不存在:', char.id);
+                }
             } catch (err) {
                 console.error(`[setChatHistory] ❌ 聊天记录写入失败:`, err.message);
+                // 检查是否是配额不足
                 if (err.name === 'QuotaExceededError' || (err.inner && err.inner.name === 'QuotaExceededError')) {
                     try { showToast('⚠️ 存储空间不足，聊天记录可能无法保存！请导出备份。'); } catch(_) {}
                 }
                 // 写入失败，脏标记保留，定时器会继续尝试保存
             }
-        }
-
-        /**
-         * @author: jfzhou10
-         * @date: 2026-02-27
-         * @description: 原子追加聊天消息 —— 在 Dexie 事务内读取最新历史并追加新消息，
-         *              彻底消除 sendMessage 与 triggerAiReply 并发写入导致的消息丢失竞态。
-         *              返回追加后的完整历史数组（用于调用方同步内存引用）。
-         */
-        async function appendChatMessages(charId, accountId, newMessages) {
-            if (!newMessages || newMessages.length === 0) return null;
-
-            // 🛡️ 先打脏标记兜底
-            try {
-                const tmpChar = await db.characters.get(charId);
-                if (tmpChar) markChatDirty(charId, tmpChar, accountId,
-                    [...(getChatHistory(tmpChar, accountId) || []), ...newMessages]);
-            } catch (_) {}
-
-            let updatedHistory = null;
-
-            try {
-                await db.transaction('rw', db.characters, async () => {
-                    const freshChar = await db.characters.get(charId);
-                    if (!freshChar) {
-                        console.warn('[appendChatMessages] ⚠️ 角色不存在:', charId);
-                        return;
-                    }
-
-                    // 读取 DB 中最新历史
-                    let history;
-                    if (!accountId) {
-                        history = freshChar.chat_history || [];
-                    } else {
-                        const byUser = freshChar.chat_history_by_user || {};
-                        history = byUser[accountId] || [];
-                    }
-
-                    // ✅ 如果用户正在查看，标记新的角色消息为已读
-                    if (currentChatCharId === charId) {
-                        newMessages.forEach(m => {
-                            if (m.role === 'char' && !m.read) m.read = true;
-                        });
-                    }
-
-                    // 追加新消息
-                    history.push(...newMessages);
-                    updatedHistory = history;
-
-                    // 构建更新载荷
-                    const updatePayload = {};
-                    if (!accountId) {
-                        updatePayload.chat_history = history;
-                    } else {
-                        const byUser = freshChar.chat_history_by_user || {};
-                        byUser[accountId] = history;
-                        updatePayload.chat_history_by_user = byUser;
-                    }
-
-                    // 自动取消聊天列表隐藏标记
-                    if (history.length > 0 && accountId &&
-                        freshChar.chat_hidden_by_user && freshChar.chat_hidden_by_user[accountId]) {
-                        const hiddenByUser = { ...freshChar.chat_hidden_by_user };
-                        hiddenByUser[accountId] = false;
-                        updatePayload.chat_hidden_by_user = hiddenByUser;
-                    }
-
-                    await db.characters.update(charId, updatePayload);
-                });
-
-                // 事务成功 → 清除脏标记
-                _pendingDirtySaves.delete(charId);
-                console.log(`[appendChatMessages] ✅ 原子追加 ${newMessages.length} 条消息, charId=${charId}`);
-            } catch (err) {
-                console.error('[appendChatMessages] ❌ 写入失败:', err.message);
-                if (err.name === 'QuotaExceededError' || (err.inner && err.inner.name === 'QuotaExceededError')) {
-                    try { showToast('⚠️ 存储空间不足，聊天记录可能无法保存！请导出备份。'); } catch (_) {}
-                }
-            }
-
-            return updatedHistory;
         }
 
         // 数据迁移：将旧结构迁移到新结构（不影响现有数据）
@@ -21298,24 +21567,15 @@ ${existingChatsContext.join('\n\n')}
                 // 计算虚拟时间
                 const virtualTimeStr = getFormattedVirtualTime(char);
 
-                // ★ 读取线下模式聊天记录（安全网）
-                // 正常情况下离线消息已在退出线下模式时合并到主历史（hideOfflineMode）。
-                // 此处仅作为安全网，处理异常残留数据。
+                // ★ 读取线下模式聊天记录，用于后续合并到统一时间线（优先IndexedDB）
                 let _offlineHistoryAuto = [];
                 let _hasOfflineMemoryAuto = false;
                 try {
                     const parsed = await loadOfflineChatHistory(accountId, char.id);
                     if (parsed && parsed.length > 0) {
-                        // 检查主历史是否已包含线下消息（已合并标志）
-                        const mainHistory = getChatHistory(char, accountId) || [];
-                        const alreadyMerged = mainHistory.some(m => m._isOffline);
-                        if (!alreadyMerged) {
-                            _offlineHistoryAuto = parsed;
-                            _hasOfflineMemoryAuto = true;
-                            console.log('[triggerAutoChat] ⚠️ 检测到未合并的线下消息（安全网），条数:', parsed.length);
-                        } else {
-                            console.log('[triggerAutoChat] ✅ 线下消息已在主历史中，跳过安全网加载');
-                        }
+                        _offlineHistoryAuto = parsed;
+                        _hasOfflineMemoryAuto = true;
+                        console.log('[triggerAutoChat] ✅ 已加载线下模式历史，条数:', parsed.length);
                     }
                 } catch (e) {
                     console.warn('[triggerAutoChat] 读取线下模式历史失败:', e);
@@ -22898,24 +23158,28 @@ ${char.foreign_lang_mode ? `【语言规则 - 最高优先级！每条消息必�
                             console.log('[triggerAutoChat] ✅ 查手机活动已标记为已通知，共标记', markedCount, '条');
                         }
                         
-                        // ★ 将查手机事件写入长期记忆，确保角色永久记住此事
-                        try {
-                            const fpMemoryContent = `${userName}偷偷拿了${char.name}的手机，做了以下事情：${_fpNpcLinesForMemoryAuto.map(l => l.trim().replace(/^[→←]\s*/, '')).join('；')}。${char.name}已经发现并做出了反应。`;
-                            await db.chat_summaries.add({
-                                accountId: accountId,
-                                chatType: 'private',
-                                chatId: String(char.id),
-                                time: Date.now(),
-                                content: fpMemoryContent,
-                                messageCount: 0,
-                                timeRange: '',
-                                keywords: ['查手机', '冒充', '手机被动'],
-                                startTime: Date.now(),
-                                endTime: Date.now()
-                            });
-                            console.log('[triggerAutoChat] ✅ 查手机事件已写入长期记忆');
-                        } catch (memErr) {
-                            console.warn('[triggerAutoChat] 写入查手机长期记忆失败:', memErr);
+                        // ★ 将查手机事件写入长期记忆（仅首次有新标记时写入，避免重复）
+                        if (markedCount > 0) {
+                            try {
+                                const fpMemoryContent = `${userName}偷偷拿了${char.name}的手机，做了以下事情：${_fpNpcLinesForMemoryAuto.map(l => l.trim().replace(/^[→←]\s*/, '')).join('；')}。${char.name}已经发现并做出了反应。`;
+                                await db.chat_summaries.add({
+                                    accountId: accountId,
+                                    chatType: 'private',
+                                    chatId: String(char.id),
+                                    time: Date.now(),
+                                    content: fpMemoryContent,
+                                    messageCount: 0,
+                                    timeRange: '',
+                                    keywords: ['查手机', '冒充', '手机被动'],
+                                    startTime: Date.now(),
+                                    endTime: Date.now()
+                                });
+                                console.log('[triggerAutoChat] ✅ 查手机事件已写入长期记忆');
+                            } catch (memErr) {
+                                console.warn('[triggerAutoChat] 写入查手机长期记忆失败:', memErr);
+                            }
+                        } else {
+                            console.log('[triggerAutoChat] ℹ️ 查手机活动已全部通知过，跳过重复写入长期记忆');
                         }
                     } catch (fpErr) {
                         console.warn('[triggerAutoChat] 标记fpNotified失败:', fpErr);
@@ -23463,6 +23727,8 @@ image_desc 字段：当 images > 0 时，用一句话描述配图内容。`;
             // 重新聚焦输入框，保持键盘不收起（方便连续发消息）
             input.focus();
 
+            let history = getChatHistory(char, accountId);
+
             // 2. 追加并显示用户消息（支持引用）
             // 🔧 使用虚拟时间，确保与快进生成的消息时间戳一致
             const virtualTime = Date.now() + getEffectiveTimeOffset(char);
@@ -23477,8 +23743,8 @@ image_desc 字段：当 images > 0 时，用一句话描述配图内容。`;
                 cancelQuote(); // 清除引用
             }
             
-            // 🔒 使用原子追加，避免与 AI 回复并发写入时丢失消息
-            await appendChatMessages(char.id, accountId, [userMsg]);
+            history.push(userMsg);
+            await setChatHistory(char, accountId, history); 
             
             // 🔥 优化：只有在有引用时才重新渲染，否则只追加消息
             if (userMsg.quote) {
@@ -25770,12 +26036,6 @@ name字段只能用这些名字 ${validMemberNames.join(' ')}
 
             messagesToRender.forEach((msg, relativeIndex) => {
                 const absoluteIndex = startIndex + relativeIndex;
-                
-                // 🔒 跳过隐藏的系统指令（如模式切换指令），不渲染到聊天界面
-                if (msg._isHidden) return;
-                // 🔒 线下消息不在线上页面渲染（线下消息有自己的页面 renderOfflineChatBody）
-                if (msg._isOffline) return;
-                
                 const prevMsgTime = absoluteIndex > 0 ? history[absoluteIndex - 1].time : null;
                 
                 // ★ fp模式：翻转消息角色（char→user显示在右侧，user→char显示在左侧）
@@ -29756,30 +30016,23 @@ messages:
                     }
                 }
 
-                // 2.5 ★ 线上线下统一时间线（安全网）
-                // 正常情况下，离线消息已在退出线下模式时合并到主历史（hideOfflineMode）。
-                // 此处仅处理异常残留（如用户未正常退出线下模式）的情况。
+                // 2.5 ★ 线上线下统一时间线：将线下消息合并到fullHistory中按时间排序（优先IndexedDB）
                 let _hasOfflineMemory = false;
                 try {
                     const offlineHistory = await loadOfflineChatHistory(accountId, targetCharId);
                     if (offlineHistory && offlineHistory.length > 0) {
                         _hasOfflineMemory = true;
-                        // 检查是否已经合并过（主历史中是否已有 _isOffline 消息）
-                        const alreadyMerged = fullHistory.some(m => m._isOffline);
-                        if (!alreadyMerged) {
-                            console.log('[triggerAiReply] ⚠️ 检测到未合并的线下消息（安全网），执行运行时合并');
-                            const offlineMsgs = offlineHistory.map(h => ({
-                                role: h.role === 'user' ? 'user' : 'char',
-                                content: h.content || '',
-                                time: h.time || 0,
-                                _isOffline: true
-                            }));
-                            fullHistory = [...fullHistory, ...offlineMsgs];
-                            fullHistory.sort((a, b) => (a.time || 0) - (b.time || 0));
-                            console.log('[triggerAiReply] ✅ 安全网合并完成，线下消息:', offlineMsgs.length);
-                        } else {
-                            console.log('[triggerAiReply] ✅ 线下消息已在主历史中，跳过运行时合并');
-                        }
+                        // 将线下消息标记后合并到fullHistory
+                        const offlineMsgs = offlineHistory.map(h => ({
+                            role: h.role === 'user' ? 'user' : 'char', // 统一角色标识
+                            content: h.content || '',
+                            time: h.time || 0,
+                            _isOffline: true // 标记为线下消息
+                        }));
+                        fullHistory = [...fullHistory, ...offlineMsgs];
+                        // 按时间排序，实现统一时间线
+                        fullHistory.sort((a, b) => (a.time || 0) - (b.time || 0));
+                        console.log('[triggerAiReply] ✅ 线上线下合并完成，线下消息:', offlineMsgs.length, '总消息:', fullHistory.length);
                     }
                 } catch (e) {
                     console.warn('[triggerAiReply] 合并线下消息失败:', e);
@@ -30504,8 +30757,8 @@ ${togetherListenInfo.isPlaying ? '正在播放中...' : '已暂停'}
                     .slice(-contextCount)
                     .filter(m => {
                         if (m.role !== 'system') return true;
-                        // 🔧 保留重要的系统事件消息（角色登录、伪造消息、转账操作、模式切换等），过滤普通时间戳
-                        if (m.type === 'char_unblock_self' || m.type === 'fake_message_notice' || m.type === 'login_attempt_failed' || m.type === 'transfer_action' || m.type === 'mode_switch') return true;
+                        // 🔧 保留重要的系统事件消息（角色登录、伪造消息、转账操作等），过滤普通时间戳
+                        if (m.type === 'char_unblock_self' || m.type === 'fake_message_notice' || m.type === 'login_attempt_failed' || m.type === 'transfer_action') return true;
                         return false;
                     })
                     .map(m => {
@@ -30529,14 +30782,6 @@ ${togetherListenInfo.isPlaying ? '正在播放中...' : '已暂停'}
                             return {
                                 role: role,
                                 content: `[线下见面] ${offlineContent}`
-                            };
-                        }
-                        
-                        // 模式切换指令：直接作为 system 角色发送给 AI，确保格式切换生效
-                        if (m.role === 'system' && m.type === 'mode_switch') {
-                            return {
-                                role: 'system',
-                                content: content
                             };
                         }
                         
@@ -30725,37 +30970,14 @@ ${togetherListenInfo.isPlaying ? '正在播放中...' : '已暂停'}
                 
                 // 🔧 修复：如果最后一条消息是 assistant（角色发的），需要添加一条 user 消息触发回复
                 // 否则 API 会认为"已经回复完了"，返回空 choices
-                // 🔒 安全增强：在判断前重新从 DB 读取最新历史，避免用户刚发的消息因竞态未包含在 messages 中
                 if (messages.length > 1) {
                     const lastMsg = messages[messages.length - 1];
                     if (lastMsg.role === 'assistant') {
-                        // 🔧 双重检查：重新从 DB 读取最新历史，确认用户是否在 AI 构建上下文期间发了新消息
-                        let userActuallySent = false;
-                        try {
-                            const latestChar = await db.characters.get(targetCharId);
-                            if (latestChar) {
-                                const latestHistory = getChatHistory(latestChar, accountId);
-                                if (latestHistory.length > 0) {
-                                    const latestMsg = latestHistory[latestHistory.length - 1];
-                                    if (latestMsg.role === 'user') {
-                                        userActuallySent = true;
-                                        // 用户确实刚发了消息，把它加入 messages 中而不是注入"对方没回复"
-                                        console.log('[triggerAiReply] ✅ 双重检查发现用户新消息，加入上下文');
-                                        messages.push({ role: 'user', content: latestMsg.content });
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            console.warn('[triggerAiReply] 双重检查读取失败:', e);
-                        }
-
-                        if (!userActuallySent) {
-                            console.log('[triggerAiReply] ⚠️ 最后一条是角色消息，添加触发消息');
-                            messages.push({
-                                role: 'user',
-                                content: `[系统指令] 对方没有回复，请你作为${char.name}继续这个话题，自然地接着聊。可以是：追问、补充、分享新想法、或者换个相关话题。按照设定的回复条数（${char.reply_min_count || 1}-${char.reply_max_count || 3}条）来回复。`
-                            });
-                        }
+                        console.log('[triggerAiReply] ⚠️ 最后一条是角色消息，添加触发消息');
+                        messages.push({
+                            role: 'user',
+                            content: `[系统指令] 对方没有回复，请你作为${char.name}继续这个话题，自然地接着聊。可以是：追问、补充、分享新想法、或者换个相关话题。按照设定的回复条数（${char.reply_min_count || 1}-${char.reply_max_count || 3}条）来回复。`
+                        });
                     }
                 }
                 
@@ -32885,9 +33107,11 @@ ${checkResult.checkResult}
                             await new Promise(r => setTimeout(r, delay));
                         }
 
-                        // 始终存入 DB —— 🔒 使用原子追加，防止与用户发消息并发写入时互相覆盖
+                        // 始终存入 DB
                         const freshChar = await db.characters.get(targetCharId);
                         if (freshChar) {
+                            let history = getChatHistory(freshChar, accountId);
+                            
                             // ✅ 使用 buildCharMessage 一次性解析翻译，存储结构化数据
                             // 🔥 修复：第一条消息时传入 thought（心声）
                             const extraFields = { time: _vNow() };
@@ -32908,8 +33132,8 @@ ${checkResult.checkResult}
                             // ✅ 附加引用信息到第一个子消息（如果有）
                             if (quoteInfoReply && subIdx === 0) newMsg.quote = quoteInfoReply;
                             
-                            // 🔒 原子追加：在事务内读取最新历史再追加，避免覆盖用户刚发的消息
-                            await appendChatMessages(targetCharId, accountId, [newMsg]);
+                            history.push(newMsg);
+                            await setChatHistory(freshChar, accountId, history);
                             
                             // 只有在当前窗口匹配时才渲染 UI
                             if (currentChatCharId === targetCharId) {
@@ -32972,28 +33196,33 @@ ${checkResult.checkResult}
                             if (freshCharForFp.fp_moments_by_user) {
                                 fpUpdatePayload.fp_moments_by_user = freshCharForFp.fp_moments_by_user;
                             }
-                            await db.characters.update(targetCharId, fpUpdatePayload);
-                            console.log('[triggerAiReply] ✅ 查手机活动已标记为已通知，共标记', markedCount, '条');
-                        }
-                        
-                        // ★ 将查手机事件写入长期记忆，确保角色永久记住此事
-                        try {
-                            const fpMemoryContent = `${userName}偷偷拿了${char.name}的手机，做了以下事情：${_fpNpcLinesForMemory.map(l => l.trim().replace(/^[→←]\s*/, '')).join('；')}。${char.name}已经发现并做出了反应。`;
-                            await db.chat_summaries.add({
-                                accountId: accountId,
-                                chatType: 'private',
-                                chatId: String(targetCharId),
-                                time: Date.now(),
-                                content: fpMemoryContent,
-                                messageCount: 0,
-                                timeRange: '',
-                                keywords: ['查手机', '冒充', '手机被动'],
-                                startTime: Date.now(),
-                                endTime: Date.now()
-                            });
-                            console.log('[triggerAiReply] ✅ 查手机事件已写入长期记忆');
-                        } catch (memErr) {
-                            console.warn('[triggerAiReply] 写入查手机长期记忆失败:', memErr);
+                            // 🔧 只有真正有新标记的消息时才更新DB和写入记忆
+                            if (markedCount > 0) {
+                                await db.characters.update(targetCharId, fpUpdatePayload);
+                                console.log('[triggerAiReply] ✅ 查手机活动已标记为已通知，共标记', markedCount, '条');
+                            
+                                // ★ 将查手机事件写入长期记忆，确保角色永久记住此事（仅首次通知时写入）
+                                try {
+                                    const fpMemoryContent = `${userName}偷偷拿了${char.name}的手机，做了以下事情：${_fpNpcLinesForMemory.map(l => l.trim().replace(/^[→←]\s*/, '')).join('；')}。${char.name}已经发现并做出了反应。`;
+                                    await db.chat_summaries.add({
+                                        accountId: accountId,
+                                        chatType: 'private',
+                                        chatId: String(targetCharId),
+                                        time: Date.now(),
+                                        content: fpMemoryContent,
+                                        messageCount: 0,
+                                        timeRange: '',
+                                        keywords: ['查手机', '冒充', '手机被动'],
+                                        startTime: Date.now(),
+                                        endTime: Date.now()
+                                    });
+                                    console.log('[triggerAiReply] ✅ 查手机事件已写入长期记忆');
+                                } catch (memErr) {
+                                    console.warn('[triggerAiReply] 写入查手机长期记忆失败:', memErr);
+                                }
+                            } else {
+                                console.log('[triggerAiReply] ℹ️ 查手机活动已全部通知过，跳过重复写入长期记忆');
+                            }
                         }
                     } catch (fpErr) {
                         console.warn('[triggerAiReply] 标记fpNotified失败:', fpErr);
@@ -47959,46 +48188,12 @@ async function showOfflineMode() {
     renderOfflineChatBody(char);
 }
 
-/**
- * @author: jfzhou10
- * @date: 2026-02-27
- * @description: 隐藏线下模式，注入模式切换指令到线上历史（线下消息不合并到线上，由triggerAiReply运行时加载）。
- */
-async function hideOfflineMode() {
+// 隐藏线下模式
+function hideOfflineMode() {
     const offlinePage = document.getElementById('offline-chat-window');
     offlinePage.style.display = 'none';
-
-    const savedCharId = offlineModeCharId;
-    offlineModeCharId = null; // 先清空，避免重复触发
-
-    if (savedCharId && offlineModeHistory && offlineModeHistory.length > 0) {
-        try {
-            const accountId = getCurrentAccountId();
-            const char = await db.characters.get(savedCharId);
-            if (char && accountId) {
-                // 线下消息不合并到线上主历史，保留在线下存储中
-                // triggerAiReply 运行时会从 IndexedDB 加载线下消息作为 AI 上下文
-
-                // 仅注入模式切换指令到线上历史，告知 AI 已切回线上模式
-                const onlineHistory = getChatHistory(char, accountId);
-                const switchInstruction = {
-                    role: 'system',
-                    content: '[系统指令：线下见面模式已结束，现在回到了线上微信聊天模式。你的回复【必须】严格遵守线上模式的JSON格式（包含reply和thought字段）。请自然地衔接线下发生的事情继续聊天。]',
-                    time: Date.now(),
-                    _isHidden: true, // 不在聊天界面显示
-                    type: 'mode_switch'
-                };
-                onlineHistory.push(switchInstruction);
-                await setChatHistory(char, accountId, onlineHistory);
-                console.log('[hideOfflineMode] ✅ 已注入模式切换指令，线下消息保留在线下存储中');
-            }
-        } catch (e) {
-            console.error('[hideOfflineMode] ❌ 注入模式切换指令失败:', e);
-        }
-    }
-
-    // 清空内存中的线下历史（线下存储保留，供AI上下文使用）
-    offlineModeHistory = [];
+    
+    offlineModeCharId = null;
 }
 
 // 渲染线下模式聊天内容
@@ -58072,22 +58267,31 @@ function xianyuShowMyWallet() { alert('我的钱包功能待开发'); }
 function xianyuShowDataManagement() { xianyuShowSettingsDialog(); }
 
 async function xianyuExportData() {
-    const allData = {
-        goods: await xianyuDb.goods.toArray(),
-        collections: await xianyuDb.collections.toArray(),
-        messages: await xianyuDb.messages.toArray(),
-        users: await xianyuDb.users.toArray(),
-        orders: await xianyuDb.orders.toArray(),
-        exportDate: new Date().toISOString()
-    };
-    const dataStr = JSON.stringify(allData, null, 2);
-    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-    const exportFileDefaultName = 'xianyu_data.json';
-    const linkElement = document.createElement('a');
-    linkElement.setAttribute('href', dataUri);
-    linkElement.setAttribute('download', exportFileDefaultName);
-    linkElement.click();
-    xianyuShowDataStatus('数据已导出');
+    try {
+        const allData = {
+            goods: await xianyuDb.goods.toArray(),
+            collections: await xianyuDb.collections.toArray(),
+            messages: await xianyuDb.messages.toArray(),
+            users: await xianyuDb.users.toArray(),
+            orders: await xianyuDb.orders.toArray(),
+            exportDate: new Date().toISOString()
+        };
+        const dataStr = JSON.stringify(allData, null, 2);
+        // 使用 Blob + URL.createObjectURL 替代 data URI，避免大数据量导致浏览器崩溃
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const linkElement = document.createElement('a');
+        linkElement.href = url;
+        linkElement.download = 'xianyu_data.json';
+        document.body.appendChild(linkElement);
+        linkElement.click();
+        document.body.removeChild(linkElement);
+        URL.revokeObjectURL(url);
+        xianyuShowDataStatus('数据已导出');
+    } catch (error) {
+        console.error('闲鱼数据导出失败:', error);
+        alert('数据导出失败: ' + error.message);
+    }
 }
 
 function xianyuImportData() {

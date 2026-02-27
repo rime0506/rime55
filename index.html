@@ -17,7 +17,7 @@
     <link rel="apple-touch-icon" href="https://img.heliar.top/file/1770541813634_无标题434_20260208170943.png">
     
     <!-- 引入外部样式表 - 添加版本号防止缓存 -->
-    <link rel="stylesheet" href="style.css?v=4.0">
+    <link rel="stylesheet" href="style.css?v=5.0">
     
     <!-- Font Awesome 图标库 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
@@ -40,21 +40,6 @@
             html.style.fontSize = (16 / actual * 100) + '%';
             console.log('[FontScale] 检测到安卓系统字体缩放 ' + actual + 'px，已补偿为 ' + (16 / actual * 100).toFixed(1) + '%');
         }
-    })();
-    </script>
-    <!-- 🔧 视口高度修正：用 window.innerHeight 精确设置 --app-height，
-         彻底解决手机浏览器 100vh 包含地址栏、底部出现空白的问题 -->
-    <script>
-    (function() {
-        function setAppHeight() {
-            document.documentElement.style.setProperty('--app-height', window.innerHeight + 'px');
-        }
-        setAppHeight();
-        window.addEventListener('resize', setAppHeight);
-        // 部分安卓浏览器 orientationchange 不触发 resize
-        window.addEventListener('orientationchange', function() {
-            setTimeout(setAppHeight, 150);
-        });
     })();
     </script>
     <script src="https://cdn.jsdelivr.net/npm/dexie@3.2.4/dist/dexie.min.js" defer></script>

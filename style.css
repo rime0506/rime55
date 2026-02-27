@@ -26,7 +26,7 @@
             -webkit-text-size-adjust: 100%;
             -moz-text-size-adjust: 100%;
             text-size-adjust: 100%;
-            background-color: #000; /* 防止底部安全区出现白边 */
+            background-color: #fff; /* 与 body 背景色统一，防止出现异色边缘 */
         }
         body {
             width: 100%;
@@ -58,20 +58,15 @@ body {
     background-position: center;
     background-repeat: no-repeat;
 }
-/* 🔧 核心修复：使用 height:100% 从 html→body→.phone 逐级继承真实可视高度
-   不用 100vh/100dvh（手机上包含地址栏高度，不准）
-   不用 position:fixed（部分安卓机型会导致底部空白）
-   JS 兜底：通过 --app-height 变量实时设置 window.innerHeight */
 .phone {
     width: 100%;
-    height: 100%;
-    height: var(--app-height, 100%); /* JS 实时设置的精确高度，100% 作为回退 */
-    overflow: hidden;
+    height: 100vh;
     position: relative;
-    padding: 0 8px;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
+    padding: 0 8px env(safe-area-inset-bottom, 0px);
     margin: 0;
 }
 
@@ -420,10 +415,9 @@ body.standalone-mode .chat-detail-page {
             align-items: center;
             z-index: 20;
             flex-shrink: 0;
-            /* 🔧 底部间距：8px 视觉间距 + iPhone 安全区域 */
-            margin: 0 auto calc(8px + env(safe-area-inset-bottom, 0px));
+            margin: 0 auto;
             align-self: center;
-            overflow: hidden; /* 🔧 防止安卓大字体撑出 */
+            overflow: hidden;
         }
         .dock-icon .icon {
             width: 56px;

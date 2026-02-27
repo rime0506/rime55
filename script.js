@@ -29825,7 +29825,7 @@ messages:
         }
 
         async function triggerAiReply(additionalSystemInfo = null) {
-            console.log('[triggerAiReply] ⚡ 触发 AI 回复');
+            console.log('[triggerAiReply] ⚡ 触发 AI 回复', window._isRegenerateMode ? '(重回模式)' : '');
             
             // 🔧 防止重复调用API（超时15秒自动解锁，防止手机端锁死）
             if (window._isGeneratingReply) {
@@ -29833,6 +29833,7 @@ messages:
                 if (elapsed < 15000) { // 15秒内认为是正常生成中
                     console.log('[triggerAiReply] 正在生成回复中，忽略重复调用 (已等待' + Math.round(elapsed/1000) + '秒)');
                     showToast('正在生成回复中，请稍候...');
+                    window._isRegenerateMode = false; // 清除重回标记
                     return;
                 }
                 // 超过15秒，强制重置锁（防止手机端卡死）
@@ -29845,6 +29846,7 @@ messages:
             
             // ★ 查手机NPC模式：NPC视角回复（NPC以为是角色在发消息）
             if (window._fpChatMode && window._fpAccountId && String(window._fpAccountId).startsWith('fp_npc_')) {
+                window._isRegenerateMode = false; // 清除重回标记
                 await triggerFpNpcReply();
                 return;
             }
@@ -30973,12 +30975,34 @@ ${togetherListenInfo.isPlaying ? '正在播放中...' : '已暂停'}
                 if (messages.length > 1) {
                     const lastMsg = messages[messages.length - 1];
                     if (lastMsg.role === 'assistant') {
-                        console.log('[triggerAiReply] ⚠️ 最后一条是角色消息，添加触发消息');
+                        // ★ 区分"重回"模式和"主动聊天/继续"模式
+                        if (window._isRegenerateMode) {
+                            console.log('[triggerAiReply] 🔄 重回模式：重新生成上一条回复');
+                            messages.push({
+                                role: 'user',
+                                content: `[系统指令] 用户对你上一条回复不满意，请你作为${char.name}重新回复。不要重复之前的回复内容，尝试不同的回答方式、语气或角度。回复的对象是之前的对话内容，按照设定的回复条数（${char.reply_min_count || 1}-${char.reply_max_count || 3}条）来回复。`
+                            });
+                        } else {
+                            console.log('[triggerAiReply] ⚠️ 最后一条是角色消息，添加触发消息');
+                            messages.push({
+                                role: 'user',
+                                content: `[系统指令] 对方没有回复，请你作为${char.name}继续这个话题，自然地接着聊。可以是：追问、补充、分享新想法、或者换个相关话题。按照设定的回复条数（${char.reply_min_count || 1}-${char.reply_max_count || 3}条）来回复。`
+                            });
+                        }
+                    }
+                }
+                
+                // ★ 重回模式下：即使最后一条是用户消息，也注入重新生成提示
+                if (window._isRegenerateMode && messages.length > 1) {
+                    const lastMsg = messages[messages.length - 1];
+                    if (lastMsg.role === 'user' && !lastMsg.content?.includes('[系统指令]')) {
                         messages.push({
-                            role: 'user',
-                            content: `[系统指令] 对方没有回复，请你作为${char.name}继续这个话题，自然地接着聊。可以是：追问、补充、分享新想法、或者换个相关话题。按照设定的回复条数（${char.reply_min_count || 1}-${char.reply_max_count || 3}条）来回复。`
+                            role: 'system',
+                            content: `提醒：用户对你之前的回复不满意，请重新回复。不要重复之前的内容，尝试不同的回答方式和角度。`
                         });
                     }
+                    // 清除重回标记
+                    window._isRegenerateMode = false;
                 }
                 
                 // ★ 如果有查手机活动，在消息末尾追加一条系统提醒，确保AI注意到
@@ -33248,6 +33272,8 @@ ${checkResult.checkResult}
                 // 🔧 无论成功还是失败，都要释放锁，允许下次调用
                 window._isGeneratingReply = false;
                 window._isGeneratingReplyTime = 0;
+                // 🔄 清除重回标记
+                window._isRegenerateMode = false;
                 // 🔧 释放角色级共享锁
                 autoChatLocks.delete(targetCharId);
                 if (window._autoChatLockTimes) delete window._autoChatLockTimes[targetCharId];
@@ -33333,6 +33359,7 @@ ${checkResult.checkResult}
             closeChatPanel();
             
             // 重新生成回复（基于删除后的历史记录，用户消息还在）
+            window._isRegenerateMode = true;
             await triggerAiReply();
         }
         
@@ -33421,6 +33448,7 @@ ${checkResult.checkResult}
             closeChatPanel();
             
             // 重新生成群聊回复
+            window._isRegenerateMode = true;
             await triggerAiReply();
         }
 

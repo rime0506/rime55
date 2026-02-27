@@ -58,19 +58,17 @@ body {
     background-position: center;
     background-repeat: no-repeat;
 }
-/* 🔧 核心修复：统一使用 position:fixed + inset:0 撑满屏幕
-   不再依赖 100vh / 100dvh（在手机浏览器上不可靠，100vh 包含地址栏高度）
-   无论普通浏览器还是 PWA 模式，都用 fixed 定位精确贴合可视区域 */
+/* 🔧 核心修复：使用 height:100% 从 html→body→.phone 逐级继承真实可视高度
+   不用 100vh/100dvh（手机上包含地址栏高度，不准）
+   不用 position:fixed（部分安卓机型会导致底部空白）
+   JS 兜底：通过 --app-height 变量实时设置 window.innerHeight */
 .phone {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
     width: 100%;
+    height: 100%;
+    height: var(--app-height, 100%); /* JS 实时设置的精确高度，100% 作为回退 */
     overflow: hidden;
+    position: relative;
     padding: 0 8px;
-    padding-bottom: env(safe-area-inset-bottom, 0px); /* iPhone 底部安全区域 */
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
@@ -422,9 +420,8 @@ body.standalone-mode .chat-detail-page {
             align-items: center;
             z-index: 20;
             flex-shrink: 0;
-            /* 🔧 底部间距：.phone 已通过 padding-bottom 处理了 safe-area，
-               这里只保留视觉间距 8px，不再额外留 20px 空白 */
-            margin: 0 auto 8px;
+            /* 🔧 底部间距：8px 视觉间距 + iPhone 安全区域 */
+            margin: 0 auto calc(8px + env(safe-area-inset-bottom, 0px));
             align-self: center;
             overflow: hidden; /* 🔧 防止安卓大字体撑出 */
         }
